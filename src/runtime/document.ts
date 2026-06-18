@@ -37,6 +37,7 @@ export class Document {
   async beforeSave(): Promise<void> {}
   async beforeSubmit(): Promise<void> {}
   async onSubmit(): Promise<void> {}
+  async beforeCancel(): Promise<void> {}
   async onCancel(): Promise<void> {}
 
   // ---- persistence ----
@@ -122,10 +123,10 @@ export class SubmittableDocument extends Document {
     if ((this.doc.docstatus ?? 0) !== 0) {
       throw new Error(`Cannot submit ${this.doctype} ${this.doc.name}: docstatus is ${this.doc.docstatus}`);
     }
-    await this.beforeSubmit();
     this.doc.docstatus = 1;
+    await this.beforeSubmit(); // may mutate doc/status -> persisted by save()
     await this.save();
-    await this.onSubmit();
+    await this.onSubmit(); // post-commit side-effects
     return this;
   }
 
@@ -134,8 +135,9 @@ export class SubmittableDocument extends Document {
       throw new Error(`Cannot cancel ${this.doctype} ${this.doc.name}: docstatus is ${this.doc.docstatus}`);
     }
     this.doc.docstatus = 2;
+    await this.beforeCancel(); // may mutate doc/status -> persisted by save()
     await this.save();
-    await this.onCancel();
+    await this.onCancel(); // post-commit side-effects
     return this;
   }
 }

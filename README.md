@@ -54,8 +54,8 @@ The generator turns each in-slice DocType into:
 | 1 | Schema generator (DocType JSON -> SQL + types) | ✅ |
 | 2 | Minimal Selling doctype set generated | ✅ (Currency/UOM/Company/Customer/Item/Sales Order/+Item/Window) |
 | 3 | Document lifecycle runtime (load/save/submit) | ✅ (`src/runtime/`, swappable store, 3 tests green) |
-| 4–5 | Sales Order controller (validate, submit/cancel) | next |
-| 6 | Vercel API + thin UI | |
+| 4–5 | Sales Order controller (validate, submit/cancel) | ✅ (`src/controllers/`, 7 tests; totals + status machine) |
+| 6 | Vercel API + thin UI | next |
 | 7 | Prove it generalizes (2nd doctype) | |
 | 8+ | **Job spine + status machine** (replaces Ascora) | the real engine |
 
