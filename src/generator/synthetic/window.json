@@ -1,0 +1,28 @@
+{
+  "name": "Window",
+  "istable": 0,
+  "is_submittable": 0,
+  "autoname": "hash",
+  "_note": "Custom Spartan doctype — NOT from ERPNext. Per-window spec for a job. Top-level (not a nested child) so it can link to the order line AND grow its own children (glass units, hardware) later. Fields below are PLACEHOLDERS until the real measurement code dictionary (manual 'Page 1') is captured.",
+  "fields": [
+    { "fieldname": "sales_order", "fieldtype": "Link", "options": "Sales Order", "reqd": 1 },
+    { "fieldname": "sales_order_item", "fieldtype": "Link", "options": "Sales Order Item" },
+    { "fieldname": "item_code", "fieldtype": "Link", "options": "Item", "reqd": 1 },
+    { "fieldname": "window_label", "fieldtype": "Data" },
+    { "fieldname": "location", "fieldtype": "Data" },
+    { "fieldname": "window_type", "fieldtype": "Select", "options": "Awning\nSliding\nDouble Hung\nCasement\nFixed\nBifold\nFrench Door\nSliding Door", "reqd": 1 },
+    { "fieldname": "qty", "fieldtype": "Int", "default": "1" },
+    { "fieldname": "width_mm", "fieldtype": "Int", "reqd": 1 },
+    { "fieldname": "height_mm", "fieldtype": "Int", "reqd": 1 },
+    { "fieldname": "opening_direction", "fieldtype": "Select", "options": "\nLeft\nRight\nUp\nDown\nFixed" },
+    { "fieldname": "frame_material", "fieldtype": "Select", "options": "Aluminium\nuPVC\nTimber" },
+    { "fieldname": "frame_colour", "fieldtype": "Data" },
+    { "fieldname": "glass_type", "fieldtype": "Link", "options": "Glass Spec" },
+    { "fieldname": "is_double_glazed", "fieldtype": "Check", "default": "1" },
+    { "fieldname": "is_safety_glass", "fieldtype": "Check" },
+    { "fieldname": "reveal_mm", "fieldtype": "Int" },
+    { "fieldname": "handle_height_mm", "fieldtype": "Int" },
+    { "fieldname": "flyscreen", "fieldtype": "Check" },
+    { "fieldname": "notes", "fieldtype": "Small Text" }
+  ]
+}

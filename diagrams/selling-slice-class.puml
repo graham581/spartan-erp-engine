@@ -1,0 +1,286 @@
+@startuml selling-slice-class
+' =====================================================================
+' Spartan ERP Engine  -  Selling vertical slice  -  CLASS MODEL
+' SOURCE OF TRUTH: ERPNext DocType JSON
+'   C:\Users\parrg\Documents\erpnext-develop\erpnext-develop\erpnext
+' Extracted 2026-06-18 from the *.json `fields[]` of each doctype.
+'
+' SCOPE DECISION (KISS / YAGNI):
+'   This models the MINIMAL set needed for a working Sales Order:
+'     Customer, Item, UOM, Currency, Company, Sales Order, Sales Order Item.
+'   Each class shows the CORE fields we will build in Phase 2, NOT every
+'   ERPNext field. Each class note records the FULL ERPNext field count and
+'   the deferred groups, so nothing is silently dropped - truth is traceable.
+'
+' TYPE VOCABULARY (ERPNext fieldtype -> Postgres in the generator, Phase 1):
+'   Data/Small Text/Text  -> text          Link(X)   -> text FK to X.name
+'   Select[a/b]           -> text + CHECK   Table(X)  -> child rows (X.parent)
+'   Currency/Float/Percent-> numeric        Check     -> boolean
+'   Int                   -> integer        Date/Datetime/Time -> date/timestamp
+'   "*"  after a field    = reqd (required in ERPNext)
+' =====================================================================
+
+skinparam class {
+  BackgroundColor White
+  BorderColor #2c3e50
+  ArrowColor #2c3e50
+}
+skinparam stereotypeCBackgroundColor #ecf0f1
+hide circle
+hide empty members
+
+' =====================================================================
+' VALIDATED against Spartan Master Operations Manual v3.1 (2026-06-18).
+' See docs/ops-manual-coverage.md for the full coverage map + decisions.
+'
+' DECISION: this engine REPLACES Ascora and becomes the JOB SPINE.
+' This Selling slice is the TOOLCHAIN PROOF (Phases 1-7), built first.
+'
+' DEFERRED SPINE (Phase 8+, NOT modeled here yet):
+'   * Job = operational parent; Sales Order becomes the QUOTE beneath it.
+'   * Job carries a ~15-state custom status machine (a/b/c.2/d.1-d.5/e/f/g)
+'     -- this is NOT Frappe docstatus (0/1/2); needs a first-class workflow.
+'   * Status transitions are PAYMENT-GATED (5% -> measure, 45% -> sign-off,
+'     mfg payment -> scheduling) via Xero integration.
+'   * Multi-entity routing: Spartan VIC / Spartan ACT (job-ID prefixes).
+'   * Klaes OWNS manufacturing -- ingest its lists, do not rebuild MRP.
+' =====================================================================
+note as N_SPINE
+  **SELLING SLICE = toolchain proof (Phases 1-7).**
+  The real operational spine is a **Job** with a ~15-state
+  status machine (replaces Ascora) -- built in Phase 8+.
+  Sales Order will be re-parented as the *quote* under Job.
+  Full map: docs/ops-manual-coverage.md
+end note
+
+' ---------------------------------------------------------------------
+' LIFECYCLE RUNTIME  (Phase 3) - the mini-Frappe core every doctype gets
+' ---------------------------------------------------------------------
+abstract class Document <<runtime>> {
+  + name : text  <<PK>>
+  + owner : text
+  + creation : timestamp
+  + modified : timestamp
+  + modified_by : text
+  + docstatus : int
+  + idx : int
+  --
+  + validate() : void
+  + before_save() : void
+  + insert() : void
+  + save() : void
+}
+note right of Document
+  docstatus: 0 = Draft, 1 = Submitted, 2 = Cancelled
+  Every persisted doctype row carries these 7 columns.
+  Lifecycle order: before_validate -> validate
+                   -> before_save -> insert/save
+end note
+
+abstract class SubmittableDocument <<runtime>> {
+  + submit() : void
+  + cancel() : void
+  --
+  + before_submit() : void
+  + on_submit() : void
+  + on_cancel() : void
+}
+
+abstract class ChildDocument <<runtime>> {
+  + parent : text  <<FK->parent.name>>
+  + parenttype : text
+  + parentfield : text
+}
+
+Document <|-- SubmittableDocument
+Document <|-- ChildDocument
+
+' ---------------------------------------------------------------------
+' MASTERS  (docstatus stays 0 - not submittable)
+' ---------------------------------------------------------------------
+class Currency <<master>> <<frappe-core>> {
+  + currency_name : Data  <<PK>>
+  + symbol : Data
+  + enabled : Check
+  + fraction : Data
+  + smallest_currency_fraction_value : Currency
+}
+note bottom of Currency
+  SOURCE: frappe framework (NOT in erpnext app).
+  Modeled as a minimal master we seed ourselves.
+end note
+
+class UOM <<master>> {
+  + uom_name : Data * <<PK>>
+  + symbol : Data
+  + enabled : Check
+  + must_be_whole_number : Check
+}
+note bottom of UOM
+  SOURCE: setup/doctype/uom/uom.json
+  ERPNext fields: 7  |  autoname: field:uom_name  |  modeled: 4
+end note
+
+class Company <<master>> {
+  + company_name : Data * <<PK>>
+  + abbr : Data *
+  + default_currency : Link(Currency) *
+  + country : Link(Country) *
+  + valuation_method : Select[FIFO/Moving Average/LIFO] *
+  + tax_id : Data
+  + parent_company : Link(Company)
+}
+note bottom of Company
+  SOURCE: setup/doctype/company/company.json
+  ERPNext fields: 93  |  autoname: field:company_name  |  modeled: 7
+  DEFERRED: ~60 GL default-account links (Accounts module),
+            depreciation/asset accounts, perpetual-inventory config.
+end note
+
+class Customer <<master>> {
+  + name : text <<PK>>
+  + customer_name : Data *
+  + customer_type : Select[Company/Individual/Partnership] *
+  + customer_group : Link(CustomerGroup)
+  + territory : Link(Territory)
+  + default_currency : Link(Currency)
+  + default_price_list : Link(PriceList)
+  + tax_id : Data
+  + disabled : Check
+  + default_commission_rate : Float
+}
+note bottom of Customer
+  SOURCE: selling/doctype/customer/customer.json
+  ERPNext fields: 48  |  autoname: naming_series: (CUST-.YYYY.-)  |  modeled: 9
+  DEFERRED: accounts[], credit_limits[], sales_team[], portal_users[],
+            loyalty program, tax withholding, primary contact/address links.
+end note
+
+class Item <<master>> {
+  + item_code : Data * <<PK>>
+  + item_name : Data
+  + item_group : Link(ItemGroup) *
+  + stock_uom : Link(UOM) *
+  + sales_uom : Link(UOM)
+  + is_stock_item : Check
+  + is_sales_item : Check
+  + standard_rate : Currency
+  + valuation_rate : Currency
+  + disabled : Check
+  + description : Text Editor
+}
+note bottom of Item
+  SOURCE: stock/doctype/item/item.json
+  ERPNext fields: 79  |  autoname: field:item_code  |  modeled: 11
+  DEFERRED: variants/attributes[], barcodes[], uoms[], reorder_levels[],
+            batch/serial config, item_defaults[], taxes[], supplier_items[].
+end note
+
+' ---------------------------------------------------------------------
+' TRANSACTION  (submittable)
+' ---------------------------------------------------------------------
+class SalesOrder <<transaction>> {
+  + name : text <<PK>>
+  + naming_series : Select[SAL-ORD-.YYYY.-] *
+  + customer : Link(Customer) *
+  + customer_name : Data
+  + order_type : Select[Sales/Maintenance/Shopping Cart] *
+  + company : Link(Company) *
+  + transaction_date : Date *
+  + delivery_date : Date
+  + currency : Link(Currency) *
+  + conversion_rate : Float *
+  + selling_price_list : Link(PriceList) *
+  + status : Select[Draft/On Hold/To Deliver and Bill/...] *
+  + total_qty : Float
+  + total : Currency
+  + net_total : Currency
+  + grand_total : Currency
+  + rounded_total : Currency
+  + per_delivered : Percent
+  + per_billed : Percent
+  + amended_from : Link(SalesOrder)
+}
+note bottom of SalesOrder
+  SOURCE: selling/doctype/sales_order/sales_order.json
+  ERPNext fields: 112  |  is_submittable: 1  |  autoname: naming_series: (SAL-ORD-.YYYY.-)
+  modeled: 20
+  DEFERRED: taxes[], payment_schedule[], pricing_rules[], packed_items[],
+            addresses/contacts, discounts, loyalty, UTM, inter-company.
+  CONTROLLER (Phase 4-5): validate(), on_submit(), on_cancel(), set_missing_values()
+end note
+
+class SalesOrderItem <<child>> {
+  + name : text <<PK,hash>>
+  + item_code : Link(Item) *
+  + item_name : Data *
+  + qty : Float *
+  + uom : Link(UOM) *
+  + stock_uom : Link(UOM)
+  + conversion_factor : Float *
+  + stock_qty : Float
+  + rate : Currency
+  + amount : Currency
+  + net_rate : Currency
+  + net_amount : Currency
+  + discount_percentage : Percent
+  + delivery_date : Date
+  + warehouse : Link(Warehouse)
+  + delivered_qty : Float
+  + billed_amt : Currency
+}
+note bottom of SalesOrderItem
+  SOURCE: selling/doctype/sales_order_item/sales_order_item.json
+  ERPNext fields: 83  |  istable: 1  |  autoname: hash
+  modeled: 17
+  DEFERRED: margins, base_* currency mirrors, pricing_rules, blanket/BOM/MR
+            links, serial/batch, projected/produced/picked qty fields.
+end note
+
+' ---------------------------------------------------------------------
+' OUT-OF-SLICE MASTERS  (referenced by in-scope FKs; build later)
+' ---------------------------------------------------------------------
+class PriceList      <<external>> { + price_list_name : Data }
+class CustomerGroup  <<external>> { + customer_group_name : Data }
+class Territory      <<external>> { + territory_name : Data }
+class ItemGroup      <<external>> { + item_group_name : Data }
+class Warehouse      <<external>> { + warehouse_name : Data }
+class Country        <<external>> { + country_name : Data }
+
+' ---------------------------------------------------------------------
+' INHERITANCE  (which runtime base each doctype gets)
+' ---------------------------------------------------------------------
+Document            <|-- Currency
+Document            <|-- UOM
+Document            <|-- Company
+Document            <|-- Customer
+Document            <|-- Item
+SubmittableDocument <|-- SalesOrder
+ChildDocument       <|-- SalesOrderItem
+
+' ---------------------------------------------------------------------
+' DATA RELATIONSHIPS  (Link = association, Table = composition)
+' ---------------------------------------------------------------------
+SalesOrder "1" *-- "1..*" SalesOrderItem : items (Table)
+
+SalesOrder --> Customer   : customer
+SalesOrder --> Company    : company
+SalesOrder --> Currency   : currency
+SalesOrder --> PriceList  : selling_price_list
+SalesOrder ..> SalesOrder : amended_from
+
+SalesOrderItem --> Item      : item_code
+SalesOrderItem --> UOM       : uom
+SalesOrderItem --> Warehouse : warehouse
+
+Item     --> UOM           : stock_uom
+Item     --> ItemGroup     : item_group
+Customer --> Currency      : default_currency
+Customer --> PriceList     : default_price_list
+Customer --> CustomerGroup : customer_group
+Customer --> Territory     : territory
+Company  --> Currency      : default_currency
+Company  --> Country       : country
+Company  ..> Company       : parent_company
+
+@enduml
