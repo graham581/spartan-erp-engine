@@ -9,6 +9,7 @@
  * framework, not the erpnext app), so the generator treats it uniformly.
  */
 export const ERPNEXT_ROOT =
+  process.env.ERPNEXT_ROOT ||
   'C:/Users/parrg/Documents/erpnext-develop/erpnext-develop/erpnext';
 
 export const SELLING_SLICE: string[] = [
