@@ -8,10 +8,12 @@
   "scripts": {
     "generate": "tsx src/generator/cli.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "dev": "vercel dev"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@vercel/node": "^3.2.24",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"

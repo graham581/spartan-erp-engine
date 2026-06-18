@@ -40,6 +40,21 @@ The generator turns each in-slice DocType into:
 - a Postgres `CREATE TABLE` (base columns + scalar fields; child tables for `Table` fields in-slice),
 - a TypeScript interface (`extends BaseDoc` / `ChildDoc`; `Select` -> string-literal unions; `Link` -> string with target noted).
 
+## API (Phase 6)
+
+Vercel functions in `api/`, backed by `SupabaseStore` (env-configured). UI at `public/index.html`.
+
+| Method | Route | Action |
+|---|---|---|
+| POST | `/api/sales-order` | create + validate a Sales Order |
+| GET | `/api/sales-order/:name` | load it |
+| POST | `/api/sales-order/:name` `{ "action": "submit" }` | submit (docstatus 0→1) |
+| POST | `/api/sales-order/:name` `{ "action": "cancel" }` | cancel (1→2) |
+| GET | `/api/health` | health + whether Supabase is wired |
+
+The service layer (`src/api/service.ts`) is store-injectable, so it's unit-tested against
+`MemoryStore` without a live DB. Run locally with `npm run dev` (needs the Vercel CLI + `.env`).
+
 ## What the generator does NOT do (yet)
 
 - No FK constraints (Link = plain text + comment) — added later once the full master set exists.
@@ -55,8 +70,8 @@ The generator turns each in-slice DocType into:
 | 2 | Minimal Selling doctype set generated | ✅ (Currency/UOM/Company/Customer/Item/Sales Order/+Item/Window) |
 | 3 | Document lifecycle runtime (load/save/submit) | ✅ (`src/runtime/`, swappable store, 3 tests green) |
 | 4–5 | Sales Order controller (validate, submit/cancel) | ✅ (`src/controllers/`, 7 tests; totals + status machine) |
-| 6 | Vercel API + thin UI | next |
-| 7 | Prove it generalizes (2nd doctype) | |
+| 6 | Vercel API + thin UI | ✅ (`api/sales-order`, `public/index.html`; service store-injectable, 3 tests) |
+| 7 | Prove it generalizes (2nd doctype) | next |
 | 8+ | **Job spine + status machine** (replaces Ascora) | the real engine |
 
 ## Provisioning (manual, human steps)
