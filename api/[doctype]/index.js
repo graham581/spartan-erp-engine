@@ -1,4 +1,5 @@
 // Vercel route: collection. GET -> list, POST -> create. Covers EVERY doctype.
+import '../../src/bootstrap.js'; // register doctypes + perms at cold start
 import { handle } from '../../src/api/handler.js';
 import { SupabaseStore } from '../../src/runtime/supabase-store.js';
 import { ctxFromRequest } from '../../src/api/context-from-request.js';

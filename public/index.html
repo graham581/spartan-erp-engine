@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Spartan ERP Engine</title>
+  <style>
+    :root {
+      --bg:#f7f7f8; --surface:#fff; --ink:#1a1a1a; --muted:#8a8a8a;
+      --accent:#c41230; --ok:#22c55e; --line:#e6e6e8;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink);
+      font:14px/1.55 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    .wrap { max-width:760px; margin:0 auto; padding:40px 20px 64px; }
+    h1 { font-size:22px; margin:0 0 2px; letter-spacing:-.2px; }
+    .sub { color:var(--muted); margin:0 0 24px; }
+    .card { background:var(--surface); border:1px solid var(--line);
+      border-radius:10px; padding:16px 18px; margin:0 0 16px; }
+    .row { display:flex; align-items:center; gap:10px; }
+    .pill { display:inline-flex; align-items:center; gap:7px; font-weight:600;
+      font-size:12px; padding:4px 11px; border-radius:999px;
+      background:#f0f0f2; color:var(--muted); }
+    .dot { width:8px; height:8px; border-radius:50%; background:var(--muted); }
+    .pill.up { background:rgba(34,197,94,.12); color:#137a3a; }
+    .pill.up .dot { background:var(--ok); }
+    .pill.down { background:rgba(196,18,48,.10); color:var(--accent); }
+    .pill.down .dot { background:var(--accent); }
+    h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em;
+      color:var(--muted); margin:0 0 10px; }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    td { padding:7px 8px; border-top:1px solid var(--line); vertical-align:top; }
+    tr:first-child td { border-top:none; }
+    .m { font-family:var(--mono); font-size:12px; }
+    .verb { color:var(--accent); font-weight:700; }
+    code { font-family:var(--mono); background:#f0f0f2; padding:1px 5px; border-radius:4px; font-size:12px; }
+    .note { color:var(--muted); font-size:12.5px; }
+    a { color:var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Spartan ERP Engine</h1>
+    <p class="sub">A metadata-driven, Frappe-base-level engine — plain JS on Vercel + Supabase.</p>
+
+    <div class="card">
+      <div class="row">
+        <span id="status" class="pill"><span class="dot"></span>checking…</span>
+        <span id="meta" class="note"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>API</h2>
+      <p class="note" style="margin-top:0">API-only — there is no UI yet. Endpoints are generic across every doctype.</p>
+      <table>
+        <tr><td class="m"><span class="verb">GET</span> /api/health</td><td>liveness (no auth)</td></tr>
+        <tr><td class="m"><span class="verb">GET</span> /api/Customer</td><td>list (row-scoped)</td></tr>
+        <tr><td class="m"><span class="verb">POST</span> /api/Customer</td><td>create</td></tr>
+        <tr><td class="m"><span class="verb">GET</span> /api/Customer/&lt;name&gt;</td><td>read one (field-masked)</td></tr>
+        <tr><td class="m"><span class="verb">POST</span> /api/Customer/&lt;name&gt;</td><td>update / <code>{ "action": "submit" }</code></td></tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Auth (dev shim)</h2>
+      <p class="note" style="margin-top:0">Every request needs an identity via headers — <strong>not secure</strong>, pending real token verification:</p>
+      <p class="m">x-spartan-user: you@spartan<br>x-spartan-roles: admin<br>x-spartan-branch: VIC</p>
+    </div>
+  </div>
+
+  <script>
+    fetch('/api/health').then(r => r.json()).then(h => {
+      const s = document.getElementById('status');
+      s.className = 'pill up';
+      s.innerHTML = '<span class="dot"></span>engine up';
+      document.getElementById('meta').textContent =
+        'node ' + (h.node || '?') + ' · supabase ' + (h.supabaseConfigured ? 'configured' : 'NOT configured');
+    }).catch(() => {
+      const s = document.getElementById('status');
+      s.className = 'pill down';
+      s.innerHTML = '<span class="dot"></span>health check failed';
+    });
+  </script>
+</body>
+</html>
