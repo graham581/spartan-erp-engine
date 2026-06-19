@@ -23,6 +23,7 @@ import { NotFoundError } from '../runtime/errors.js';
  * @property {string} [autoname]  'hash' | 'field:<name>' | naming-series prefix
  * @property {FieldDef[]} fields
  * @property {ChildTableDef[]} childTables
+ * @property {string[]} [scopeFields]  row-scope fields (e.g. ['branch']) for permission query conditions
  */
 
 /** @type {Record<string, DocMeta>} */
