@@ -5,9 +5,11 @@ import { NotFoundError } from '../runtime/errors.js';
  * @property {string} fieldname
  * @property {string} fieldtype   Data|Int|Float|Currency|Select|Check|Date|Datetime|Link|Table|Text|Code
  * @property {boolean} [reqd]
- * @property {string} [options]   Select: allowed values; Link/Table: target doctype
+ * @property {string|string[]} [options]   Select: allowed values (array or \n-string); Link/Table: target doctype
  * @property {number} [permlevel] 0 = base (default); >0 = gated (Phase 2)
  * @property {boolean} [readOnly]
+ * @property {boolean} [unique]   value must be unique across the table
+ * @property {string} [fetchFrom] 'linkField.sourceField' — copy from a linked doc on save
  *
  * @typedef {Object} ChildTableDef
  * @property {string} field       parent fieldname holding the rows

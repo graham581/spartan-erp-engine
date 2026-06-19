@@ -1,13 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { getMeta } from '../meta/registry.js';
 import { StateError, NotFoundError } from './errors.js';
+import { resolveName } from './naming.js';
+import { validateAgainstMeta } from './validate.js';
+import { resolveFetchFrom, validateLinks } from './links.js';
 
 const nowISO = () => new Date().toISOString();
 
 /**
  * The mini-Frappe document: wraps a plain payload + its DocMeta and runs the
- * lifecycle (insert / save). Business logic lives in controller subclasses
- * overriding the hooks; base hooks no-op.
+ * lifecycle (insert / save). Pipeline each write goes through:
+ *   resolve fetch_from -> meta validation -> link validation -> controller
+ *   validate() -> beforeSave() -> persist (+ children).
+ * Business logic lives in controller subclasses overriding the hooks.
  */
 export class Document {
   /**
@@ -32,13 +37,13 @@ export class Document {
 
   // ---- persistence ----
   async insert() {
-    if (!this.doc.name) this.doc.name = this.#autoname();
+    if (!this.doc.name) this.doc.name = await resolveName(this.meta, this.doc, this.store);
     this.doc.docstatus ??= 0;
     this.doc.idx ??= 0;
     const t = nowISO();
     this.doc.creation ??= t;
     this.doc.modified = t;
-    await this.validate();
+    await this.#runChecks();
     await this.beforeSave();
     await this.store.insert(this.meta.table, this.#scalarRow());
     await this.#saveChildren();
@@ -48,11 +53,21 @@ export class Document {
   async save() {
     if (!this.doc.name) return this.insert();
     this.doc.modified = nowISO();
-    await this.validate();
+    await this.#runChecks();
     await this.beforeSave();
     const existing = await this.store.get(this.meta.table, this.doc.name);
-    if (existing) await this.store.update(this.meta.table, this.doc.name, this.#scalarRow());
-    else await this.store.insert(this.meta.table, this.#scalarRow());
+    if (existing) {
+      const prev = existing.docstatus ?? 0;
+      const next = this.doc.docstatus ?? 0;
+      // Submitted/cancelled docs are immutable. The only legal saves at
+      // docstatus>=1 are the transition saves themselves (docstatus changes).
+      if (prev >= 1 && next === prev) {
+        throw new StateError(`${this.doctype} ${this.doc.name} is ${prev === 1 ? 'submitted' : 'cancelled'} and cannot be edited`);
+      }
+      await this.store.update(this.meta.table, this.doc.name, this.#scalarRow());
+    } else {
+      await this.store.insert(this.meta.table, this.#scalarRow());
+    }
     // children: replace wholesale (delete-then-insert) — simple and correct for v1
     for (const ct of this.meta.childTables) {
       await this.store.deleteChildren(ct.table, this.doc.name, this.doctype, ct.field);
@@ -62,6 +77,13 @@ export class Document {
   }
 
   // ---- internals ----
+  async #runChecks() {
+    await resolveFetchFrom(this.meta, this.doc, this.store);
+    await validateAgainstMeta(this.meta, this.doc, this.store);
+    await validateLinks(this.meta, this.doc, this.store);
+    await this.validate(); // controller hook, after meta-driven checks
+  }
+
   #childFieldNames() {
     return new Set(this.meta.childTables.map((c) => c.field));
   }
@@ -94,16 +116,6 @@ export class Document {
         await this.store.insert(ct.table, child);
       }
     }
-  }
-
-  #autoname() {
-    const a = this.meta.autoname || '';
-    if (a.startsWith('field:')) {
-      const v = this.doc[a.slice('field:'.length)];
-      if (v) return String(v);
-    }
-    // hash / naming_series / unspecified -> stable unique fallback (atomic series lands in Phase 1)
-    return `${this.meta.table}-${randomUUID().slice(0, 8)}`;
   }
 }
 
