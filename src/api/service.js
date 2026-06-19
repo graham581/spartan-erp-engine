@@ -1,6 +1,7 @@
 import { getMeta } from '../meta/registry.js';
 import { newDoc, loadDoc } from '../runtime/document.js';
 import { assertCan, assertCanWrite, maskRead, queryConditions } from '../perms/permissions.js';
+import { transition } from '../workflow/workflow.js';
 import { NotFoundError, StateError } from '../runtime/errors.js';
 
 /**
@@ -79,5 +80,17 @@ export async function cancelDoc(ctx, doctype, name, store) {
   const d = await loadInScope(ctx, doctype, name, store);
   if (typeof d.cancel !== 'function') throw new StateError(`${doctype} is not submittable`);
   await d.cancel();
+  return maskRead(ctx, doctype, d.doc);
+}
+
+/**
+ * Fire a declarative workflow action. Op-gated (write) + row-scoped here; the
+ * transition's own role-gate + condition are enforced inside transition().
+ * @param {import('../perms/context.js').Ctx} ctx
+ */
+export async function transitionDoc(ctx, doctype, name, action, store) {
+  assertCan(ctx, doctype, 'write');
+  const d = await loadInScope(ctx, doctype, name, store);
+  await transition(ctx, d, action, store);
   return maskRead(ctx, doctype, d.doc);
 }

@@ -1,4 +1,4 @@
-import { createDoc, getDoc, listDocs, updateDoc, submitDoc, cancelDoc } from './service.js';
+import { createDoc, getDoc, listDocs, updateDoc, submitDoc, cancelDoc, transitionDoc } from './service.js';
 import { ValidationError, NotFoundError, PermissionError, StateError } from '../runtime/errors.js';
 
 /** Map an EngineError subclass to an HTTP status. */
@@ -39,7 +39,7 @@ export async function handle({ method, doctype, name, body = {}, query = {}, ctx
     } else if (m === 'POST') {
       if (action === 'submit') data = await submitDoc(ctx, doctype, name, store);
       else if (action === 'cancel') data = await cancelDoc(ctx, doctype, name, store);
-      else if (action) return { status: 400, body: { error: `Unknown action '${action}'`, type: 'ValidationError' } };
+      else if (action) data = await transitionDoc(ctx, doctype, name, action, store); // declarative workflow action
       else data = await updateDoc(ctx, doctype, name, body, store);
     } else {
       return { status: 405, body: { error: `${m} not allowed`, type: 'MethodNotAllowed' } };

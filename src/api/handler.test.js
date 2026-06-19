@@ -70,8 +70,9 @@ describe('handler — method/action dispatch + error→status', () => {
     const c = await handle({ method: 'POST', doctype: 'Job', body: { title: 'A', branch: 'VIC' }, ctx: rep }, store);
     const s = await handle({ method: 'POST', doctype: 'Job', name: c.body.name, body: { action: 'submit' }, ctx: rep }, store);
     expect(s.status).toBe(403);
+    // unknown action routes to the workflow; this Job has no workflow registered -> StateError -> 409
     const u = await handle({ method: 'POST', doctype: 'Job', name: c.body.name, body: { action: 'frobnicate' }, ctx: rep }, store);
-    expect(u.status).toBe(400);
+    expect(u.status).toBe(409);
   });
 
   it('DELETE method -> 405', async () => {
