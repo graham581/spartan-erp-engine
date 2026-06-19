@@ -1,20 +1,19 @@
 {
   "name": "spartan-erp-engine",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
   "type": "module",
-  "description": "Lean TypeScript business engine on Vercel + Supabase. Schema and document lifecycle generated from ERPNext DocType JSON (source of truth). Job-spine engine that will replace Ascora.",
+  "description": "A Frappe-base-level metadata engine in plain JS on Vercel + Supabase. DocType-driven Document runtime, server-authoritative permissions, declarative workflow. Job-spine engine that will replace Ascora.",
   "scripts": {
-    "generate": "tsx src/generator/cli.ts",
-    "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "tsc -p jsconfig.json",
     "dev": "vercel dev"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
     "@vercel/node": "^3.2.24",
-    "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   },

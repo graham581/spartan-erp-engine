@@ -1,0 +1,164 @@
+import { randomUUID } from 'node:crypto';
+import { getMeta } from '../meta/registry.js';
+import { StateError, NotFoundError } from './errors.js';
+
+const nowISO = () => new Date().toISOString();
+
+/**
+ * The mini-Frappe document: wraps a plain payload + its DocMeta and runs the
+ * lifecycle (insert / save). Business logic lives in controller subclasses
+ * overriding the hooks; base hooks no-op.
+ */
+export class Document {
+  /**
+   * @param {string} doctype
+   * @param {import('./store.js').Row} doc
+   * @param {import('./store.js').Store} store
+   */
+  constructor(doctype, doc, store) {
+    this.doctype = doctype;
+    this.doc = doc;
+    this.store = store;
+    this.meta = getMeta(doctype);
+  }
+
+  // ---- lifecycle hooks (override in controllers) ----
+  async validate() {}
+  async beforeSave() {}
+  async beforeSubmit() {}
+  async onSubmit() {}
+  async beforeCancel() {}
+  async onCancel() {}
+
+  // ---- persistence ----
+  async insert() {
+    if (!this.doc.name) this.doc.name = this.#autoname();
+    this.doc.docstatus ??= 0;
+    this.doc.idx ??= 0;
+    const t = nowISO();
+    this.doc.creation ??= t;
+    this.doc.modified = t;
+    await this.validate();
+    await this.beforeSave();
+    await this.store.insert(this.meta.table, this.#scalarRow());
+    await this.#saveChildren();
+    return this;
+  }
+
+  async save() {
+    if (!this.doc.name) return this.insert();
+    this.doc.modified = nowISO();
+    await this.validate();
+    await this.beforeSave();
+    const existing = await this.store.get(this.meta.table, this.doc.name);
+    if (existing) await this.store.update(this.meta.table, this.doc.name, this.#scalarRow());
+    else await this.store.insert(this.meta.table, this.#scalarRow());
+    // children: replace wholesale (delete-then-insert) — simple and correct for v1
+    for (const ct of this.meta.childTables) {
+      await this.store.deleteChildren(ct.table, this.doc.name, this.doctype, ct.field);
+    }
+    await this.#saveChildren();
+    return this;
+  }
+
+  // ---- internals ----
+  #childFieldNames() {
+    return new Set(this.meta.childTables.map((c) => c.field));
+  }
+
+  #scalarRow() {
+    const childFields = this.#childFieldNames();
+    /** @type {import('./store.js').Row} */
+    const row = { name: this.doc.name };
+    for (const [k, v] of Object.entries(this.doc)) {
+      if (childFields.has(k)) continue;
+      row[k] = v;
+    }
+    return row;
+  }
+
+  async #saveChildren() {
+    for (const ct of this.meta.childTables) {
+      const rows = this.doc[ct.field] ?? [];
+      let i = 0;
+      for (const child of rows) {
+        i += 1;
+        child.name ??= randomUUID();
+        child.parent = this.doc.name;
+        child.parenttype = this.doctype;
+        child.parentfield = ct.field;
+        child.idx = i;
+        child.docstatus ??= this.doc.docstatus ?? 0;
+        child.creation ??= nowISO();
+        child.modified = nowISO();
+        await this.store.insert(ct.table, child);
+      }
+    }
+  }
+
+  #autoname() {
+    const a = this.meta.autoname || '';
+    if (a.startsWith('field:')) {
+      const v = this.doc[a.slice('field:'.length)];
+      if (v) return String(v);
+    }
+    // hash / naming_series / unspecified -> stable unique fallback (atomic series lands in Phase 1)
+    return `${this.meta.table}-${randomUUID().slice(0, 8)}`;
+  }
+}
+
+/** A submittable document gains the docstatus 0 -> 1 -> 2 transitions. */
+export class SubmittableDocument extends Document {
+  async submit() {
+    if (!this.meta.submittable) throw new StateError(`${this.doctype} is not submittable`);
+    if ((this.doc.docstatus ?? 0) !== 0) {
+      throw new StateError(`Cannot submit ${this.doctype} ${this.doc.name}: docstatus is ${this.doc.docstatus}`);
+    }
+    this.doc.docstatus = 1;
+    await this.beforeSubmit(); // may mutate doc -> persisted by save()
+    await this.save();
+    await this.onSubmit(); // post-commit side-effects
+    return this;
+  }
+
+  async cancel() {
+    if ((this.doc.docstatus ?? 0) !== 1) {
+      throw new StateError(`Cannot cancel ${this.doctype} ${this.doc.name}: docstatus is ${this.doc.docstatus}`);
+    }
+    this.doc.docstatus = 2;
+    await this.beforeCancel();
+    await this.save();
+    await this.onCancel();
+    return this;
+  }
+}
+
+// ---- controller registry + factory ----
+/** @type {Map<string, typeof Document>} */
+const registry = new Map();
+
+/** Register a controller subclass for a doctype. @param {string} doctype @param {typeof Document} ctor */
+export function registerController(doctype, ctor) {
+  registry.set(doctype, ctor);
+}
+
+/** Build the right Document instance (registered controller > submittable default > plain). */
+export function newDoc(doctype, doc, store) {
+  const meta = getMeta(doctype);
+  const Ctor = registry.get(doctype) ?? (meta.submittable ? SubmittableDocument : Document);
+  return new Ctor(doctype, doc, store);
+}
+
+/** Load a document (with its child tables) from the store. */
+export async function loadDoc(doctype, name, store) {
+  const meta = getMeta(doctype);
+  const row = await store.get(meta.table, name);
+  if (!row) throw new NotFoundError(`${doctype} ${name} not found`);
+  const doc = { ...row };
+  for (const ct of meta.childTables) {
+    const children = await store.getChildren(ct.table, name, doctype, ct.field);
+    children.sort((a, b) => (a.idx ?? 0) - (b.idx ?? 0));
+    doc[ct.field] = children;
+  }
+  return newDoc(doctype, doc, store);
+}
