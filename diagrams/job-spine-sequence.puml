@@ -1,0 +1,91 @@
+@startuml job-spine-sequence
+' Job Spine — create -> payment-gated transition sequence.
+' Traces the REAL call path through the existing engine runtime
+' (service.js -> document.js -> naming.js -> workflow.js -> hooks.js),
+' verified against source 2026-06-21.
+' R1 (post-critique): transition match is on `state` not `from` (F-1);
+'   create relies on status field default 'Won' (F-8); transition actor = admin
+'   (sales is create-only, F-7); mfg gate now on to_scheduling (F-3).
+
+title Job Spine — create (Won) then gated transition (Won -> Measure)
+
+actor "Sales (create)" as Sales
+actor "Admin (advance)" as Admin
+participant "service.js" as Svc
+participant "JobController\n(extends Document)" as Ctl
+participant "naming.js\nnextSeries" as Name
+participant "Store\n(PgStore tx)" as Store
+participant "workflow.js\ntransition" as Wf
+participant "hooks.js\nWORKFLOW_HOOKS" as Hooks
+database "tabJob /\ntabWorkflowAction" as DB
+
+== Create a Job from a WON deal (status defaults to 'Won') ==
+Sales -> Svc : createDoc(ctx, 'Job', {entity:'VIC', customer, quotation})
+note right of Svc : status omitted -> field default 'Won' (F-8)
+activate Svc
+Svc -> Svc : assertCan(ctx,'Job','create')\nassertCanWrite (no above-level fields)
+Svc -> Ctl : newDoc('Job', doc, store).insert()
+activate Ctl
+note right of Ctl
+  FORK F1: controller picks the series by entity
+  BEFORE super.insert() so resolveName is skipped.
+end note
+Ctl -> Ctl : assert entity in {VIC,ACT} (fail-fast, F-4)
+Ctl -> Name : nextSeries('VIC-.#####', store)
+activate Name
+Name -> Store : atomic counter (tab_series / RPC)
+Name --> Ctl : 'VIC-00001'
+deactivate Name
+Ctl -> Ctl : this.doc.name = 'VIC-00001'
+Ctl -> Ctl : super.insert()\n(resolveName no-op: name set)
+Ctl -> Ctl : #runChecks (meta reqd + Link validate)
+Ctl -> Store : insert tabJob (status='Won', docstatus=0)
+Store -> DB : row written
+Ctl --> Svc : doc
+deactivate Ctl
+Svc --> Sales : maskRead(Job) -> VIC-00001 (Won)
+deactivate Svc
+
+== Advance Won -> Measure (5% deposit gate; admin fires it, F-7) ==
+Admin -> Svc : transitionDoc(ctx,'Job','VIC-00001','start_measure')
+activate Svc
+Svc -> Store : transaction(begin)
+activate Store
+Svc -> Svc : assertCanMutate(ctx,'Job','write')  ' sales has no write -> would 403 here
+Svc -> Store : loadInScope (entity row-scope)
+Svc -> Wf : transition(ctx, d, 'start_measure', txStore)
+activate Wf
+Wf -> Wf : getWorkflow('Job') (cache / loadWorkflow)
+Wf -> Wf : find transition (state='Won', action='start_measure')
+Wf -> Wf : role-gate: ctx.roles vs allowed.split('\\n')
+Wf -> Hooks : getHooks('Job','start_measure').condition
+activate Hooks
+Hooks --> Wf : condition(doc) = (Number(doc.deposit_pct) >= 5)
+deactivate Hooks
+
+alt deposit_pct < 5 (gate fails)
+  Wf --> Svc : throw StateError(guard:\n"5% deposit must clear before site measure")
+  Svc -> Store : transaction(ROLLBACK)
+  note right of Store : state UNMOVED, no audit row
+  Svc --> Admin : 409 — gate not met
+else deposit_pct >= 5 (gate passes)
+  Wf -> Wf : d.doc.status = 'Measure'
+  Wf -> Store : d.save() (validate pipeline)
+  Store -> DB : status -> 'Measure'
+  Wf -> Store : insert tabWorkflowAction\n(Won->Measure, actor, ts)
+  Store -> DB : audit row
+  Wf --> Svc : d
+  deactivate Wf
+  Svc -> Store : transaction(COMMIT)
+  deactivate Store
+  Svc --> Admin : maskRead(Job) -> Measure
+end
+deactivate Svc
+
+note over Wf, Hooks
+  Same gate pattern guards the mfg payment, now on
+  to_scheduling (Manufacturing->Scheduling, idx 4, F-3):
+  "Job::to_scheduling" condition = doc.mfg_paid === true.
+end note
+
+@enduml

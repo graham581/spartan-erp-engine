@@ -1,3 +1,12 @@
+## 2026-06-21T00:00Z — spartan-erp-engine Job Spine U4 (job.workflow.seed.js)
+
+- Examined: docs/workorder-job-spine.md (U4 frozen contract), docs/adr-job-spine.md §4.1/§4.2/§4.3 (15-transition table + verbatim seed rows), scripts/prove-tx-rollback.mjs case C (proven seed shape: sbStore.insert('tabWorkflow',…) + sbStore.insert('tabWorkflowTransition',…)), src/workflow/workflow.js loadWorkflow (columns read: state/next_state/action/allowed/guard/idx + parent/parenttype/parentfield; initial=transRows[0].state; allowed.split('\n')).
+- Found: src/doctypes/job/job.def.js and job.controller.js already landed (U1/U2). No existing seed file. MemoryStore.insert(table, row) keyed by row.name — store.getChildren filters on parent/parenttype/parentfield.
+- Built: src/doctypes/job/job.workflow.seed.js — exports JOB_WORKFLOW_NAME, JOB_WORKFLOW_PARENT, JOB_WORKFLOW_TRANSITIONS (15 rows), and seedJobWorkflow(store). All 15 rows use the frozen column names (state/next_state/action/allowed/guard/idx/parent/parenttype/parentfield/docstatus). Multi-role rows use '\n'-joined allowed ('admin\nscheduler'). idx-1 row has state:'Won' so loadWorkflow derives initial='Won'. Function is insert-once (callers that re-seed must pre-delete, per prove-tx-rollback.mjs:238-244 pattern).
+- Verified: 17/17 scratch checks green over MemoryStore — parent row present + document_type/workflow_state_field correct, 15 child rows, idx-1 state=Won, idx-4 allowed='admin\nscheduler' splits to ['admin','scheduler'], all 15 idx values 1-15 contiguous, guard strings present on gated rows, no comma-space in any allowed field. Scratch deleted.
+- Handed off: result note to team-lead (U4 done, ready for U5 to import).
+- Open questions: None. All U4 done-criteria met.
+
 ## 2026-06-20T00:00Z — spartan-erp-engine Pass B Unit E (transaction wiring)
 
 - Examined: docs/workorder-integrity-layer.md Unit E, docs/adr-integrity-layer.md §2.3/§2.4, all target source files (handler.js, service.js, workflow.js, installer.js, document.js, store.js, memory-store.js, pg-store.js), all relevant tests (handler.test.js, service.test.js, migrate.test.js, installer.test.js, store-transaction.test.js).

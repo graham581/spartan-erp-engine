@@ -1,0 +1,180 @@
+@startuml job-spine-class
+' Job Spine — solution class diagram (first increment)
+' spartan-erp-engine. Replaces Ascora as the operational system-of-record.
+' Designed against the EXISTING engine runtime (workflow.js / document.js /
+' service.js / naming.js / installer.js) — verified 2026-06-21.
+' R1 (post-critique): seed vocab = state/next_state/action/allowed/guard (F-1);
+'   allowed is \n-delimited (F-2); mfg gate moved to to_scheduling (F-3);
+'   sales is create-only, fires no transitions (F-7).
+'
+' Legend:
+'   <<reuse>>  exists today, works as-is for Job (no change)
+'   <<new>>    new artifact this increment introduces
+'   <<seed>>   data rows seeded into existing tables (not code)
+'   <<fork>>   needs a flagged decision / possible engine touch
+
+title Job Spine — class diagram (Won -> Complete, payment-gated)
+
+' ===========================================================================
+' REUSED ENGINE RUNTIME (unchanged — proven by prove-quotation / prove-tx-rollback)
+' ===========================================================================
+package "engine runtime (reuse)" {
+
+  class Document <<reuse>> {
+    +doctype : string
+    +doc : Row
+    +store : Store
+    +meta : Meta
+    --
+    +insert() : Promise<this>
+    +save() : Promise<this>
+    #runChecks()   ' validate meta + links + controller.validate()
+    .. lifecycle hooks (override in controller) ..
+    +validate()
+    +beforeSave()
+  }
+
+  class "service.js" as Service <<reuse>> {
+    +createDoc(ctx, dt, payload, store)
+    +getDoc(ctx, dt, name, store)
+    +listDocs(ctx, dt, opts, store)
+    +transitionDoc(ctx, dt, name, action, store)  ' tx-wrapped; asserts write FIRST
+  }
+
+  class "workflow.js" as Workflow <<reuse>> {
+    -WORKFLOW_DEFS : Map  ' warm cache
+    +transition(ctx, d, action, store)
+    +availableActions(ctx, d) : string[]  ' [] on cold cache (F-5)
+    -loadWorkflow(doctype, store)  ' reads state/next_state/action/allowed/guard
+  }
+
+  class "hooks.js" as Hooks <<reuse>> {
+    +WORKFLOW_HOOKS : Map<"Doctype::action", {condition,onTransition}>
+    +getHooks(doctype, action) : WorkflowHook
+  }
+
+  class "naming.js" as Naming <<reuse>> {
+    +resolveName(meta, doc, store)  ' ONE static autoname pattern
+    +nextSeries(pattern, store)     ' atomic per-prefix counter (callable directly)
+  }
+
+  class "registry.js (MetaRegistry)" as Registry <<reuse>> {
+    +getMeta(doctype) : Meta
+    +primeFrom(metas, pinned)
+  }
+
+  class "installer.js" as Installer <<reuse>> {
+    +emitMigration(def) : path   ' DDL -> migration file (human db push)
+    +syncDoctype(def, store)     ' upsert tabDocType/Field/Perm
+    +migrate(def, store, opts)
+  }
+}
+
+' ===========================================================================
+' NEW + SEEDED ARTIFACTS — the Job spine proper
+' ===========================================================================
+package "Job spine (new)" {
+
+  class "Job (DocMeta def)" as JobDef <<new>> {
+    .. identity ..
+    +entity : Select(VIC,ACT) reqd   ' drives prefix + future financial routing
+    +status : Select(workflow state) default 'Won'  ' NOT docstatus; Job NOT submittable
+    .. links (artifacts beneath the Job) ..
+    +customer : Link->Customer reqd
+    +quotation : Link->Quotation     ' the quote artifact sits beneath the Job
+    .. operational ..
+    +site_address : Text
+    +job_value : Currency
+    .. payment-gate stubs (read by condition hooks; real Xero/Zip deferred) ..
+    +deposit_pct : Float   ' % deposit cleared  (gate: >= 5  -> Measure)
+    +balance_pct : Float   ' % contract cleared (gate: >= 45 -> Sign-off)
+    +mfg_paid : Check      ' mfg payment cleared (gate -> Scheduling, F-3)
+    .. seams (deferred — leave the Link, don't build) ..
+    +klaes_ref : Data         ' future: Klaes ingest
+    +signoff_doc : Data       ' future: Documenso final sign-off
+    +hold_reason : Text
+    --
+    autoname  : NONE (controller-driven — see fork F1)
+    submittable : false
+    scopeFields : [entity]    ' VIC/ACT row-scope seam
+  }
+  note right of JobDef
+    Seeded via installer.migrate(JobDef):
+    emitMigration -> human `supabase db push`
+    -> syncDoctype -> bumpMetaVersion.
+    Mirrors prove-quotation's QuotationDef.
+    status default 'Won' = deterministic initial (F-8).
+  end note
+
+  class "JobController" as JobCtl <<new>> {
+    ' extends the plain Document (Job is NOT submittable)
+    +insert() : Promise<this>
+    --
+    Overrides insert(): if !doc.name, assert entity
+    in {VIC,ACT} (fail-fast, F-4) then set doc.name =
+    nextSeries(`${entity}-.#####`) BEFORE super.insert()
+    so resolveName's `if (!doc.name)` short-circuits.
+  }
+  note right of JobCtl
+    FORK F1: entity-conditional prefix.
+    naming.js takes ONE static pattern; a controller
+    is the clean seam (NO naming.js change). Registered
+    via registerController('Job', JobController).
+    The controller's VIC/ACT guard (not meta reqd)
+    protects nextSeries — reqd is a later backstop.
+  end note
+
+  class "Job Workflow rows" as JobWf <<seed>> {
+    tabWorkflow (parent):
+      name='Job Workflow'
+      document_type='Job'
+      workflow_state_field='status'
+    --
+    tabWorkflowTransition (child rows; REAL columns:
+      state / next_state / action / allowed / guard / idx):
+      ' allowed is \n-delimited (F-2): 'admin' or 'admin\nscheduler'
+      idx1 start_measure    Won->Measure            admin            gate deposit>=5
+      idx2 start_signoff    Measure->Sign-off       admin            gate balance>=45
+      idx3 to_manufacturing Sign-off->Manufacturing admin            (ungated)
+      idx4 to_scheduling    Manufacturing->Scheduling admin\nscheduler  gate mfg_paid (F-3)
+      idx5 to_install       Scheduling->Install     admin\nscheduler
+      idx6 complete         Install->Complete       admin\nscheduler
+      idx7-10 hold (per from-state)                 admin\nscheduler
+      idx11 resume          Hold->Measure           admin\nscheduler
+      idx12-15 cancel (Won/Measure/Sign-off/Hold)   admin
+  }
+
+  class "Job condition hooks" as JobHooks <<new>> {
+    WORKFLOW_HOOKS set entries (code, not data):
+    "Job::start_measure" = { condition: Number(doc.deposit_pct) >= 5 }
+    "Job::start_signoff" = { condition: Number(doc.balance_pct) >= 45 }
+    "Job::to_scheduling" = { condition: doc.mfg_paid === true }  ' F-3: moved off to_manufacturing
+    (guard text lives on the matching transition ROW)
+  }
+
+  class "Job docperms" as JobPerm <<seed>> {
+    admin     : read/write/create + all transitions
+    scheduler : read/write + to_scheduling/to_install/complete/hold/resume
+    sales     : read + create ONLY (no write) -> fires NO transitions (F-7)
+    ' transition role-gate is on the row's `allowed`; write-gate (service.js:100)
+    ' runs FIRST, so a sales `allowed` entry would be a dead transition.
+  }
+}
+
+' ===========================================================================
+' RELATIONSHIPS
+' ===========================================================================
+JobCtl --|> Document : extends
+Service ..> JobCtl : newDoc() builds via registry
+Service ..> Workflow : transitionDoc -> transition()
+Workflow ..> Hooks : getHooks('Job', action)
+Workflow ..> JobHooks : reattaches condition by key
+JobCtl ..> Naming : nextSeries(entityPrefix)
+Installer ..> JobDef : migrate() seeds meta + DDL
+JobWf ..> Workflow : loadWorkflow reads these rows
+Registry ..> JobDef : getMeta('Job')
+
+JobDef "1" o-- "0..1" "Quotation" : quotation (Link, beneath)
+JobDef "1" o-- "1" "Customer" : customer (Link)
+
+@enduml

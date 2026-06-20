@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { MemoryStore } from '../runtime/memory-store.js';
 import { registerDoctype, _resetRegistry } from '../meta/registry.js';
 import { registerBootMeta } from '../meta/boot-meta.js';
@@ -11,13 +11,12 @@ import { PermissionError, StateError } from '../runtime/errors.js';
 
 const STATES = ['draft', 'measure', 'manufacture', 'complete'];
 
-// ---------------------------------------------------------------------------
-// Condition closure registered as a code hook (ADR §6 / F3).
-// "Job::start_measure" requires the deposit to be paid before starting measure.
-// ---------------------------------------------------------------------------
-WORKFLOW_HOOKS.set('Job::start_measure', {
-  condition: async (doc) => doc.deposit_paid === true,
-});
+// C-1 FIX: hook setup moved into beforeEach / afterEach so this file's toy
+// Job::start_measure hook does not pollute the process-global WORKFLOW_HOOKS Map
+// when job.workflow.test.js (which uses the real deposit_pct hook) runs in the
+// same worker. The module-scope .set that was here has been removed.
+const TOY_HOOK_KEY = 'Job::start_measure';
+const toyHook = { condition: async (doc) => doc.deposit_paid === true };
 
 function seed(store) {
   // Prime meta-doctypes (pinned boot seed) + the Job doctype.
@@ -104,8 +103,17 @@ describe('workflow', () => {
   beforeEach(() => {
     _resetRegistry();
     _resetWorkflowCache();
+    // C-1 FIX: register the toy hook here so it is fresh each test and does
+    // not collide with job.workflow.test.js's prod deposit_pct hook.
+    WORKFLOW_HOOKS.set(TOY_HOOK_KEY, toyHook);
     store = new MemoryStore();
     seed(store);
+  });
+
+  afterEach(() => {
+    // C-1 FIX: delete all Job::* hook keys after each test so no state leaks
+    // to other test files running in the same worker.
+    WORKFLOW_HOOKS.delete(TOY_HOOK_KEY);
   });
 
   const newJob = (ctx, extra = {}) => createDoc(ctx, 'Job', { title: 'J', branch: 'VIC', ...extra }, store);
