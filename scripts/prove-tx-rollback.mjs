@@ -224,12 +224,24 @@ try {
   const admin = PgAdmin.fromEnv();
 
   // Ensure the proof table exists (idempotent via migrate).
-  const res = await migrate(ProofDef, sbStore, { admin });
+  // migrate() wraps its meta-row sync in store.transaction, so it needs a
+  // transaction-capable store — pass pgStore (SupabaseStore.transaction throws by design).
+  const res = await migrate(ProofDef, pgStore, { admin });
   check(res.applied === true || res.migrationPath != null, `proof table setup: applied=${res.applied}`);
 
   // Hydrate the doctype meta so the service layer can resolve permissions.
   await ensure('TxProofDoc', sbStore);
   check(true, 'TxProofDoc meta hydrated');
+
+  // Pre-clean any orphans from a prior interrupted run so the proof is re-runnable
+  // (end-of-case cleanup doesn't fire if a mid-case assertion throws).
+  for (const n of ['TPD-ROLLBACK-A', 'TPD-SUCCESS-B', 'TPD-TRANS-C']) {
+    await pgStore.sql.unsafe(`DELETE FROM "${PROOF_TABLE}" WHERE "name" = $1`, [n]);
+  }
+  await pgStore.sql.unsafe(`DELETE FROM "${LOG_TABLE}" WHERE "ref_name" = $1`, ['TPD-TRANS-C']);
+  await pgStore.sql.unsafe(`DELETE FROM "${WORKFLOW_TRANS_TABLE}" WHERE "parent" = $1`, ['TxProofWorkflow']);
+  await pgStore.sql.unsafe(`DELETE FROM "${WORKFLOW_TABLE}" WHERE "name" = $1`, ['TxProofWorkflow']);
+  check(true, 'pre-cleaned any prior-run orphans');
 
   await caseA(pgStore, sbStore);
   await caseB(pgStore, sbStore);
