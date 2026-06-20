@@ -16,6 +16,7 @@ export class Meta {
     this._table       = def.table;
     this._submittable = Boolean(def.submittable ?? false);
     this._issingle    = Boolean(def.issingle    ?? false);   // NEW (U6)
+    this._isStub      = Boolean(def.isStub      ?? false);   // NEW (U-MARKER)
     this._autoname    = def.autoname;
     this._fields      = def.fields      ?? [];
     this._childTables = def.childTables ?? [];
@@ -28,6 +29,7 @@ export class Meta {
   get table()       { return this._table; }
   get submittable() { return this._submittable; }
   get issingle()    { return this._issingle; }               // NEW (U6)
+  get isStub()      { return this._isStub; }                 // NEW (U-MARKER)
   get autoname()    { return this._autoname; }
   get fields()      { return this._fields; }
   get childTables() { return this._childTables; }

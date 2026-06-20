@@ -41,6 +41,7 @@ export async function validateLinks(meta, doc, store) {
     if (v === undefined || v === null || v === '') continue;
     const target = tryMeta(f.options);
     if (!target) continue; // target doctype not modelled yet — skip
+    if (target.isStub) continue;      // SOFT link: stub target (empty table) — trust value, skip existence
     const row = await store.get(target.table, String(v));
     if (!row) throw new ValidationError(`${meta.doctype}.${f.fieldname}: linked ${f.options} '${v}' does not exist`);
   }

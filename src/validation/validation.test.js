@@ -107,6 +107,40 @@ describe('UpdatePatchSchema', () => {
     expect(UpdatePatchSchema.safeParse({ docstatus: 0 }).success).toBe(false);
     expect(UpdatePatchSchema.safeParse({ name: 'X' }).success).toBe(false);
   });
+
+  it('rejects reserved key: is_stub', () => {
+    const result = UpdatePatchSchema.safeParse({ is_stub: false });
+    expect(result.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U-RESERVED [CRIT-4] — is_stub is a reserved key on both envelopes
+// ---------------------------------------------------------------------------
+
+describe('is_stub reserved key (U-RESERVED)', () => {
+  it('CreatePayloadSchema rejects is_stub:true with business field', () => {
+    const result = CreatePayloadSchema.safeParse({ is_stub: true, title: 'x' });
+    expect(result.success).toBe(false);
+    const msg = result.error.issues[0].message;
+    expect(msg).toMatch(/is_stub/);
+  });
+
+  it('UpdatePatchSchema rejects is_stub:false standalone', () => {
+    const result = UpdatePatchSchema.safeParse({ is_stub: false });
+    expect(result.success).toBe(false);
+  });
+
+  it('normal business fields still pass CreatePayloadSchema', () => {
+    const result = CreatePayloadSchema.safeParse({ title: 'x', branch: 'y' });
+    expect(result.success).toBe(true);
+  });
+
+  it('existing reserved keys owner/docstatus/name still rejected by CreatePayloadSchema', () => {
+    expect(CreatePayloadSchema.safeParse({ owner: 'x' }).success).toBe(false);
+    expect(CreatePayloadSchema.safeParse({ docstatus: 1 }).success).toBe(false);
+    expect(CreatePayloadSchema.safeParse({ name: 'X-001' }).success).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

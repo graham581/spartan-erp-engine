@@ -5,7 +5,7 @@
 //         over a realistic Sales Order fixture.
 
 import { describe, it, expect } from 'vitest';
-import { isRealDoctype, mapField, erpnextJsonToDef } from './erpnext-to-def.js';
+import { isRealDoctype, mapField, erpnextJsonToDef, makeStubDef } from './erpnext-to-def.js';
 import { assertValidDef } from '../validation/def-schema.js';
 
 // ---------------------------------------------------------------------------
@@ -268,5 +268,33 @@ describe('erpnextJsonToDef: assertValidDef passes', () => {
   it('output over the Sales Order fixture passes assertValidDef', () => {
     const def = erpnextJsonToDef(SALES_ORDER_JSON);
     expect(() => assertValidDef(def)).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// makeStubDef — U-STUBDEF contract
+// ---------------------------------------------------------------------------
+describe('makeStubDef', () => {
+  it('returns the exact ADR shape for a single-word name', () => {
+    const def = makeStubDef('Currency');
+    expect(def).toEqual({
+      doctype:     'Currency',
+      table:       'tabCurrency',
+      isStub:      true,
+      submittable: false,
+      issingle:    false,
+      istable:     false,
+      fields:      [],
+      permissions: [],
+      scopeFields: [],
+    });
+  });
+
+  it('applies the space-collapse table formula for a multi-word name', () => {
+    expect(makeStubDef('Print Format').table).toBe('tabPrintFormat');
+  });
+
+  it('passes assertValidDef (zero-field def is structurally valid; isStub stripped harmlessly)', () => {
+    expect(() => assertValidDef(makeStubDef('Currency'))).not.toThrow();
   });
 });

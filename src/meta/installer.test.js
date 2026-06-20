@@ -9,7 +9,37 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { MemoryStore } from '../runtime/memory-store.js';
 import { _resetRegistry } from './registry.js';
-import { syncDoctype, emitMigration, bumpMetaVersion } from './installer.js';
+import { syncDoctype, emitMigration, bumpMetaVersion, migrate } from './installer.js';
+import { load } from './loader.js';
+import { alterColumnsSql } from './ddl.js';
+
+// A minimal full (non-stub) def used by migrate tests
+const fullDef = {
+  doctype:     'MigrateWidget',
+  table:       'tabMigrateWidget',
+  submittable: false,
+  issingle:    false,
+  istable:     false,
+  fields: [
+    { fieldname: 'widget_code', fieldtype: 'Data' },
+    { fieldname: 'qty',         fieldtype: 'Int'  },
+  ],
+  permissions: [],
+  scopeFields: [],
+};
+
+// A stub def for the same doctype (isStub:true, fields:[])
+const stubDef = {
+  doctype:     'MigrateWidget',
+  table:       'tabMigrateWidget',
+  isStub:      true,
+  submittable: false,
+  issingle:    false,
+  istable:     false,
+  fields:      [],
+  permissions: [],
+  scopeFields: [],
+};
 
 // A sample doctype definition (camelCase in-memory shape)
 const sampleDef = {
@@ -206,5 +236,155 @@ describe('bumpMetaVersion', () => {
     const v2 = (await store.get('meta_version', 'meta_version')).version;
 
     expect(v2).not.toBe(v1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// migrate() — 4-way branch (U-MARKER)
+// ---------------------------------------------------------------------------
+
+describe('migrate() — FRESH install (!exists)', () => {
+  it('uses createTableSql DDL (CREATE TABLE IF NOT EXISTS) and persists is_stub=false', async () => {
+    const store = new MemoryStore();
+    const written = [];
+    const writer = (p, sql) => written.push({ p, sql });
+
+    const result = await migrate(fullDef, store, { writer });
+
+    expect(result.ddl).toMatch(/create table if not exists/i);
+    expect(result.applied).toBe(false);
+    expect(result.migrationPath).toBeDefined();
+
+    // syncDoctype ran → tabDocType row exists with is_stub=false
+    const row = await store.get('tabDocType', 'MigrateWidget');
+    expect(row).not.toBeNull();
+    expect(row.is_stub).toBe(false);
+  });
+
+  it('uses admin.applyDDL when opts.admin provided', async () => {
+    const store = new MemoryStore();
+    const appliedDdls = [];
+    const admin = { applyDDL: async (ddl) => { appliedDdls.push(ddl); } };
+
+    const result = await migrate(fullDef, store, { admin });
+
+    expect(result.applied).toBe(true);
+    expect(appliedDdls).toHaveLength(1);
+    expect(appliedDdls[0]).toMatch(/create table if not exists/i);
+    expect(result.migrationPath).toBeUndefined();
+  });
+});
+
+describe('migrate() — UPGRADE stub→full [CRIT-8]', () => {
+  it('uses alterColumnsSql DDL and flips is_stub to false', async () => {
+    const store = new MemoryStore();
+
+    // Pre-seed: a stub row in tabDocType
+    await store.insert('tabDocType', {
+      name:      'MigrateWidget',
+      docstatus: 0,
+      idx:       0,
+      is_stub:   true,
+    });
+
+    const appliedDdls = [];
+    const admin = { applyDDL: async (ddl) => { appliedDdls.push(ddl); } };
+
+    const result = await migrate(fullDef, store, { admin });
+
+    // DDL must be ALTER ... ADD COLUMN IF NOT EXISTS, not CREATE TABLE
+    expect(result.ddl).toMatch(/add column if not exists/i);
+    expect(result.ddl).not.toMatch(/create table/i);
+    expect(result.applied).toBe(true);
+
+    // is_stub must have flipped to false in tabDocType
+    const row = await store.get('tabDocType', 'MigrateWidget');
+    expect(row.is_stub).toBe(false);
+  });
+
+  it('UPGRADE DDL is alterColumnsSql(fullDef, []) — contains real field columns', async () => {
+    const store = new MemoryStore();
+    await store.insert('tabDocType', {
+      name:      'MigrateWidget',
+      docstatus: 0,
+      idx:       0,
+      is_stub:   true,
+    });
+
+    const appliedDdls = [];
+    const admin = { applyDDL: async (ddl) => { appliedDdls.push(ddl); } };
+    await migrate(fullDef, store, { admin });
+
+    // Should equal alterColumnsSql(fullDef, [])
+    const expectedDdl = alterColumnsSql(fullDef, []);
+    expect(appliedDdls[0]).toBe(expectedDdl);
+  });
+});
+
+describe('migrate() — DOWNGRADE NO-OP (full→stub) [CRIT-6]', () => {
+  it('returns skipped:downgrade-refused and runs no DDL', async () => {
+    const store = new MemoryStore();
+
+    // Pre-seed: a FULL row (is_stub=false)
+    await store.insert('tabDocType', {
+      name:      'MigrateWidget',
+      docstatus: 0,
+      idx:       0,
+      is_stub:   false,
+    });
+
+    const appliedDdls = [];
+    const admin = { applyDDL: async (ddl) => { appliedDdls.push(ddl); } };
+
+    const result = await migrate(stubDef, store, { admin });
+
+    expect(result.applied).toBe(false);
+    expect(result.skipped).toBe('downgrade-refused');
+    expect(result.ddl).toBe('');
+
+    // No DDL was applied
+    expect(appliedDdls).toHaveLength(0);
+
+    // is_stub must still be false (no re-flip)
+    const row = await store.get('tabDocType', 'MigrateWidget');
+    expect(row.is_stub).toBe(false);
+  });
+});
+
+describe('migrate() — RE-INSTALL FULL (full over existing full) — idempotent', () => {
+  it('re-runs createTableSql and syncDoctype without error', async () => {
+    const store = new MemoryStore();
+
+    // Pre-seed: full row
+    await store.insert('tabDocType', {
+      name:      'MigrateWidget',
+      docstatus: 0,
+      idx:       0,
+      is_stub:   false,
+    });
+
+    const writer = () => {};
+    await expect(migrate(fullDef, store, { writer })).resolves.not.toThrow();
+
+    const row = await store.get('tabDocType', 'MigrateWidget');
+    expect(row.is_stub).toBe(false);
+  });
+});
+
+describe('migrate() — tx-wrap: syncDoctype runs inside store.transaction', () => {
+  it('syncDoctype is invoked through store.transaction in write branches', async () => {
+    const store = new MemoryStore();
+    const txCalls = [];
+    const origTx = store.transaction.bind(store);
+    store.transaction = async (fn) => {
+      txCalls.push(true);
+      return origTx(fn);
+    };
+
+    const writer = () => {};
+    await migrate(fullDef, store, { writer });
+
+    // store.transaction must have been called (wrapping syncDoctype)
+    expect(txCalls.length).toBeGreaterThanOrEqual(1);
   });
 });

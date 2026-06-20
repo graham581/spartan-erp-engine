@@ -458,3 +458,43 @@ describe('load() — registers into MetaRegistry', () => {
     expect(typeof meta.childTablesList).toBe('function');
   });
 });
+
+// ---------------------------------------------------------------------------
+// load() — is_stub round-trip (U-MARKER)
+// ---------------------------------------------------------------------------
+
+describe('load() — is_stub round-trip (U-MARKER)', () => {
+  it('sets meta.isStub === true when tabDocType.is_stub is true', async () => {
+    const store = new MemoryStore();
+    await seedDocType(store, 'StubDoc', { is_stub: true });
+
+    const meta = await load('StubDoc', store);
+    expect(meta.isStub).toBe(true);
+  });
+
+  it('sets meta.isStub === false when tabDocType.is_stub is false', async () => {
+    const store = new MemoryStore();
+    await seedDocType(store, 'FullDoc', { is_stub: false });
+
+    const meta = await load('FullDoc', store);
+    expect(meta.isStub).toBe(false);
+  });
+
+  it('sets meta.isStub === false when tabDocType.is_stub is absent (safe-degrade)', async () => {
+    const store = new MemoryStore();
+    // is_stub column not present (safe-degrade: missing column → false)
+    await seedDocType(store, 'LegacyDoc');
+
+    const meta = await load('LegacyDoc', store);
+    expect(meta.isStub).toBe(false);
+  });
+
+  it('isStub is a real boolean, not a truthy value', async () => {
+    const store = new MemoryStore();
+    await seedDocType(store, 'StubDoc2', { is_stub: 1 });  // DB may return 1, not true
+
+    const meta = await load('StubDoc2', store);
+    expect(meta.isStub).toBe(true);
+    expect(typeof meta.isStub).toBe('boolean');
+  });
+});

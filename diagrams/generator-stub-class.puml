@@ -1,0 +1,182 @@
+@startuml generator-stub-class
+' Solution class diagram — Pass E: closure-bounding + link-stubbing + Frappe-core handling
+' Architect, 2026-06-21. REV 2 — post critique pass 1 (E3 edge-kind split; E2-trust + E5 conditions).
+' Design only. Reuses the Pass D generator (adr-generator.md) intact.
+'
+' Legend:
+'   (NEW)   = net-new symbol introduced by this pass
+'   (EDIT)  = existing symbol gains a small, named change
+'   (REUSE) = existing symbol used unchanged
+'
+' THE E3 CORRECTION (critique blocker): Table/Table-MultiSelect targets are CHILD
+' doctypes whose ROWS ARE the seed's data -> they must be generated FULL (transitively).
+' ONLY Link targets are stubbed. Stubbing a child = framework-cols-only table =
+' #saveChildren writes to missing columns = data loss.
+
+skinparam classAttributeIconSize 0
+hide empty members
+
+' ===========================================================================
+' GENERATOR LAYER  (src/generator/ + scripts/) — additive, pure transforms
+' ===========================================================================
+package "generator (src/generator)" {
+
+  class "select-doctypes.js" as Sel {
+    +listAllDoctypeFiles(root) : string[]   <<REUSE>>
+    +closureOver(seeds, root, opts) : string[]   <<REUSE — kept behind --closure>>
+    -_depsOf(json) : {link[],table[]}   <<REUSE — already splits edge kinds>>
+    --
+    .. NEW — bounded mode (E3, edge-kind split) ..
+    +planInstall(seeds, root, opts) : InstallPlan   <<NEW>>
+  }
+
+  class "InstallPlan" as Plan <<NEW>> {
+    +full  : string[]   ' seeds + ALL transitive Table/Table-MultiSelect targets -> generated FULLY
+    +stubs : string[]   ' every LINK target of any FULL doctype, minus full -> stubbed
+    .. invariants ..
+    ' full and stubs are DISJOINT
+    ' Table edges followed to CLOSURE (children + grandchildren full)
+    ' Link edges CUT at the full-set boundary (depth bound = Links only)
+    ' THROWS if a Table target has no JSON (dead-end guard — never stub a child)
+  }
+
+  class "erpnext-to-def.js" as E2D {
+    +isRealDoctype(json) : boolean   <<REUSE>>
+    +mapField(f) : FieldDef|null   <<REUSE>>
+    +erpnextJsonToDef(json) : Def   <<REUSE — full defs (seeds + Table children)>>
+    --
+    .. NEW — synthesize a stub def for a LINK target (no source JSON) ..
+    +makeStubDef(doctypeName) : Def   <<NEW>>
+  }
+
+  class "fieldtype-map.js" as FTM {
+    +mapFieldtype(t) : Classified   <<REUSE>>
+  }
+}
+
+' ===========================================================================
+' CLI  (scripts/) — I/O layer, orchestrates the bounded install
+' ===========================================================================
+class "generate-doctypes.mjs" as CLI <<EDIT>> {
+  ' modes: --stub-deps (NEW default) | --closure | --no-closure  (mutually exclusive)
+  +main()   <<EDIT: --stub-deps -> planInstall; full via erpnextJsonToDef, stubs via makeStubDef>>
+}
+
+' ===========================================================================
+' API VALIDATION  (src/validation/) — E2-trust condition (privilege key)
+' ===========================================================================
+class "request-schemas.js" as ReqS <<EDIT>> {
+  +RESERVED_KEYS : Set   <<EDIT: add 'is_stub' (was owner/docstatus/name)>>
+  +CreatePayloadSchema / UpdatePatchSchema   <<REUSE — run rejectReservedKeys>>
+  -rejectReservedKeys(data, ctx)   <<REUSE — now also rejects is_stub -> 400>>
+}
+
+' ===========================================================================
+' META LAYER  (src/meta/) — the stub marker round-trip (mirrors depends_on)
+' ===========================================================================
+package "meta (src/meta)" {
+
+  class "ddl.js" as Ddl {
+    +PG_TYPE_MAP : Record   <<REUSE>>
+    +createTableSql(def) : string   <<REUSE — framework cols suffice for a stub>>
+    +alterColumnsSql(def, existingCols) : string   <<REUSE — upgrade with existingCols=[] (IF NOT EXISTS)>>
+  }
+
+  class "installer.js" as Inst {
+    +emitMigration(def) : string   <<REUSE>>
+    +syncDoctype(def, store)   <<EDIT: write is_stub on the DocType row>>
+    +migrate(def, store, opts)   <<EDIT: 4-branch upgrade/fresh/downgrade-noop/reinstall>>
+    +bumpMetaVersion(store)   <<REUSE>>
+  }
+
+  class "boot-meta.js" as Boot {
+    +META_DOCTYPES   <<EDIT: add {fieldname:'is_stub', fieldtype:'Check'} to DocType>>
+    +registerBootMeta()   <<REUSE>>
+  }
+
+  class "loader.js" as Loader {
+    +ensure(doctype, store)   <<REUSE>>
+    +load(doctype, store) : Meta   <<EDIT: read row.is_stub -> Meta>>
+    -_primeDoctype(...)   <<REUSE — splits Table/Link, loader.js:203-211>>
+    -_primeLinkTarget(...)   <<REUSE — a stub primes like any other>>
+  }
+
+  class "registry.js" as Reg {
+    +getMeta / hasMeta / setMeta   <<REUSE>>
+    +FieldDef / DocMeta typedefs   <<EDIT: add isStub? to DocMeta>>
+  }
+
+  class "Meta (meta.js)" as Meta {
+    +doctype / table / fields / issingle ...   <<REUSE>>
+    +isStub : boolean   <<NEW: this._isStub + get isStub()>>
+  }
+}
+
+' ===========================================================================
+' RUNTIME LAYER  (src/runtime/) — THE CRUX: soft-link validation into a stub
+' ===========================================================================
+package "runtime (src/runtime)" {
+
+  class "links.js" as Links {
+    +resolveFetchFrom(meta, doc, store)   <<REUSE — empty stub table -> silent no-op>>
+    +validateLinks(meta, doc, store)   <<EDIT: SOFT-LINK skip when target Meta.isStub>>
+    -tryMeta(doctype) : Meta|null   <<REUSE>>
+  }
+
+  class "document.js" as Doc {
+    +save() / insert()   <<REUSE — calls validateLinks unchanged>>
+    -#saveChildren()   <<REUSE — writes child rows; WHY Table targets must be FULL>>
+  }
+}
+
+' ===========================================================================
+' RELATIONSHIPS
+' ===========================================================================
+CLI ..> Sel        : planInstall(seeds, root)
+CLI ..> E2D        : erpnextJsonToDef (full) / makeStubDef (link stubs)
+CLI ..> Inst       : emitMigration | migrate (per def)
+Sel  --> Plan      : returns
+E2D  ..> FTM       : mapFieldtype (full defs only)
+
+Inst ..> Ddl       : createTableSql / alterColumnsSql(existingCols=[])
+Inst ..> Boot      : registerBootMeta
+Inst ..> Doc       : syncDoctype via newDoc('DocType').save()
+Boot --> Reg       : primeFrom (pins DocType incl. is_stub col)
+
+Loader ..> Reg     : setMeta(isStub)
+Loader --> Meta    : new Meta({ ..., isStub })
+Doc  ..> Links     : validateLinks(meta, doc, store)
+Links ..> Reg      : tryMeta(target) -> reads target.isStub
+ReqS ..> Doc       : envelope gate BEFORE updateDoc (handler.js)
+
+note bottom of Links
+  THE CORRECTNESS DECISION (ADR E2):
+  validateLinks skips the row-existence check iff target.isStub === true
+  (SOFT link — trust the value). A Link into a FULL (non-stub) target keeps
+  the HARD check. Gated on the TARGET, so a stub can NEVER soften a Link into
+  a fully-generated doctype. Recovers automatically when the stub upgrades.
+end note
+
+note bottom of ReqS
+  E2-TRUST CONDITION (privilege hole): is_stub softens link integrity.
+  Add it to RESERVED_KEYS so a client POST {is_stub:true} -> 400.
+  Only the installer (syncDoctype, bypasses the envelope) writes it.
+end note
+
+note bottom of Inst
+  STUB -> FULL UPGRADE (ADR E5), read is_stub from tabDocType (no DDL introspection):
+    1 UPGRADE (exists && wasStub): alterColumnsSql(def,[]) -> syncDoctype is_stub=false -> bump
+    2 FRESH   (!exists):           createTableSql -> sync -> bump
+    3 DOWNGRADE NO-OP (full && def.isStub): return skipped — NEVER DDL, NEVER re-flip is_stub  [cond a]
+    4 RE-INSTALL FULL: createTableSql (IF NOT EXISTS no-op) -> sync
+  PgAdmin stays WRITE-ONLY — existingCols=[] is safe (ADD COLUMN IF NOT EXISTS)  [cond b]
+end note
+
+note bottom of Plan
+  E3 EDGE-KIND SPLIT (critique blocker fix):
+  Table/Table-MultiSelect children carry the seed's DATA -> FULL + transitive.
+  Only LINK targets -> stub. Quotation: ~9 full (parent + 8 children) +
+  Link targets stubbed (tens, not 298). Frappe-core 20 are all Links -> safe.
+end note
+
+@enduml

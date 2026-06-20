@@ -129,6 +129,101 @@ function _depsOf(json) {
  * @param {{ noClosure?: boolean }} [opts]
  * @returns {string[]}      doctype names to generate
  */
+/**
+ * Split a DocType JSON's direct deps by edge kind.
+ * Link            → links[]
+ * Table | Table MultiSelect → tables[]
+ * Dynamic Link    → excluded (options is a sibling field name, not a doctype).
+ * Mirrors the loader's split (loader.js:206-211) but for raw JSON.
+ * @param {object} json  parsed DocType JSON
+ * @returns {{ links: string[], tables: string[] }}  de-duped within each list; trimmed; non-empty only
+ */
+export function depsByKind(json) {
+  const links = new Set();
+  const tables = new Set();
+  for (const field of json.fields ?? []) {
+    if (typeof field.options !== 'string' || field.options.trim() === '') continue;
+    const opt = field.options.trim();
+    if (field.fieldtype === 'Link') {
+      links.add(opt);
+    } else if (field.fieldtype === 'Table' || field.fieldtype === 'Table MultiSelect') {
+      tables.add(opt);
+    }
+    // Dynamic Link and everything else excluded
+  }
+  return { links: [...links], tables: [...tables] };
+}
+
+/**
+ * Bounded install plan: Table targets FULL (transitive to fixed point),
+ * Link targets STUBBED.
+ *   full  = seeds ∪ ALL transitive Table/Table-MultiSelect targets (BFS on Table edges)
+ *   stubs = union of Link targets over EVERY def in `full`, MINUS full (disjoint by construction)
+ * Depth bound applies to LINK edges only; Table edges followed to closure.
+ * Dead-end guard: a Table/Table-MultiSelect target with NO JSON under root → THROW
+ *   (Error naming the missing child) — never silently stubbed.
+ * Visited-set guards a Table self/mutual cycle (A→B→A JSON) — reuse closureOver's pattern.
+ * @param {string[]} seeds  seed doctype names
+ * @param {string}   root   erpnext source root
+ * @param {object}   [opts] reserved (no options consumed v1)
+ * @returns {{ full: string[], stubs: string[] }}
+ */
+export function planInstall(seeds, root, opts) {
+  const index = _buildIndex(root);
+
+  // BFS on Table edges only — mirror closureOver's visited-Set pattern (line 157)
+  const visited = new Set(seeds);
+  const queue = [...seeds];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    const file = index.get(current);
+    if (!file) continue; // unknown seed — skip (per §3.1b: seed lenience; Table CHILD guard below)
+    let json;
+    try {
+      json = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+      continue;
+    }
+    const { tables } = depsByKind(json);
+    for (const child of tables) {
+      if (visited.has(child)) continue; // cycle guard — already enqueued or processed
+      // Dead-end guard: Table child with no JSON under root → throw
+      if (!index.has(child)) {
+        throw new Error(
+          `planInstall: Table child "${child}" (referenced by "${current}") has no JSON under root — cannot be made full and must not be stubbed`
+        );
+      }
+      visited.add(child);
+      queue.push(child);
+    }
+  }
+
+  const full = [...visited];
+
+  // stubs = union of Link targets over every full def, minus full
+  const fullSet = new Set(full);
+  const stubSet = new Set();
+  for (const name of full) {
+    const file = index.get(name);
+    if (!file) continue;
+    let json;
+    try {
+      json = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+      continue;
+    }
+    const { links } = depsByKind(json);
+    for (const link of links) {
+      if (!fullSet.has(link)) {
+        stubSet.add(link);
+      }
+    }
+  }
+
+  return { full, stubs: [...stubSet] };
+}
+
 export function closureOver(seeds, root, opts) {
   const noClosure = opts?.noClosure === true;
   const index = _buildIndex(root);

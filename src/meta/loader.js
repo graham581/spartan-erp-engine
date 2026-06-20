@@ -133,12 +133,13 @@ export async function load(doctype, store) {
   const scopeFields  = Array.isArray(row.scope_fields) ? row.scope_fields : [];
   const submittable  = !!(row.is_submittable);
   const issingle     = !!(row.issingle);                                        // NEW (U6)
+  const isStub       = !!(row.is_stub);                                         // NEW (U-MARKER)
   const autoname     = row.autoname || undefined;
   // Derive table name: "tab" + doctype with spaces removed (matches Frappe convention)
   const table = `tab${doctype.replace(/\s+/g, '')}`;
 
   // Step 6 — assemble and register
-  const meta = new Meta({ doctype, table, submittable, issingle, autoname, fields, childTables, scopeFields, permissions });
+  const meta = new Meta({ doctype, table, submittable, issingle, isStub, autoname, fields, childTables, scopeFields, permissions });
   setMeta(doctype, meta, false);
   return meta;
 }

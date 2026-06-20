@@ -90,6 +90,27 @@ export function mapPermission(p) {
 }
 
 /**
+ * Synthesize a stub def from a doctype NAME alone (no source JSON).
+ * table formula MUST equal loader.js:138 and erpnextJsonToDef: 'tab'+name.replace(/\s+/g,'').
+ * @param {string} name  target doctype name (a LINK target only — never a Table child)
+ * @returns {{ doctype:string, table:string, isStub:true, submittable:false, issingle:false,
+ *             istable:false, fields:[], permissions:[], scopeFields:[] }}
+ */
+export function makeStubDef(name) {
+  return {
+    doctype:     name,
+    table:       'tab' + name.replace(/\s+/g, ''),
+    isStub:      true,
+    submittable: false,
+    issingle:    false,
+    istable:     false,
+    fields:      [],
+    permissions: [],
+    scopeFields: [],
+  };
+}
+
+/**
  * Transform a parsed ERPNext DocType JSON into an engine def object that
  * installer.syncDoctype / assertValidDef accept.
  *

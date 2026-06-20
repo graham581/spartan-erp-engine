@@ -24,8 +24,8 @@
 import fs   from 'node:fs';
 import path from 'node:path';
 
-import { closureOver }       from '../src/generator/select-doctypes.js';
-import { erpnextJsonToDef }  from '../src/generator/erpnext-to-def.js';
+import { closureOver, planInstall } from '../src/generator/select-doctypes.js';
+import { erpnextJsonToDef, makeStubDef } from '../src/generator/erpnext-to-def.js';
 import { assertValidDef }    from '../src/validation/def-schema.js';
 import { mapFieldtype }      from '../src/generator/fieldtype-map.js';
 import { emitMigration, migrate } from '../src/meta/installer.js';
@@ -39,6 +39,7 @@ function parseArgs(argv) {
   let root       = null;
   const seeds    = [];
   let noClosure  = false;
+  let stubDeps   = false;
   let doEmit     = false;
   let doApply    = false;
 
@@ -47,6 +48,7 @@ function parseArgs(argv) {
     if (a === '--root')         { root = args[++i]; }
     else if (a === '--seed')    { seeds.push(args[++i]); }
     else if (a === '--no-closure') { noClosure = true; }
+    else if (a === '--stub-deps')  { stubDeps = true; }
     else if (a === '--emit')    { doEmit = true; }
     else if (a === '--apply')   { doApply = true; }
     else {
@@ -71,8 +73,14 @@ function parseArgs(argv) {
     console.error('Only one of --emit or --apply may be specified');
     process.exit(1);
   }
+  // --stub-deps, --closure (default), and --no-closure are mutually exclusive modes.
+  const modeCount = (stubDeps ? 1 : 0) + (noClosure ? 1 : 0);
+  if (modeCount > 1) {
+    console.error('--stub-deps, --closure (default), and --no-closure are mutually exclusive');
+    process.exit(1);
+  }
 
-  return { root, seeds, noClosure, doEmit, doApply };
+  return { root, seeds, noClosure, stubDeps, doEmit, doApply };
 }
 
 // ---------------------------------------------------------------------------
@@ -102,58 +110,118 @@ function collectWarnings(jsonFields = [], doctypeName) {
 // main
 // ---------------------------------------------------------------------------
 async function main() {
-  const { root, seeds, noClosure, doEmit, doApply } = parseArgs(process.argv);
+  const { root, seeds, noClosure, stubDeps, doEmit, doApply } = parseArgs(process.argv);
 
-  // 1. Resolve the closure (or validate-only seed set).
+  // 1. Resolve the doctype set — three modes:
+  //      --stub-deps   : BFS on Table edges (full) + Link targets (stubs)
+  //      --closure     : (default) full transitive closure via closureOver
+  //      --no-closure  : seeds only (closureOver with noClosure:true)
   //    closureOver throws (fail-at-generate) for noClosure=true if any seed has
   //    outside deps — naming the first missing target (D1-1 guard rail).
-  let names;
-  try {
-    names = closureOver(seeds, root, { noClosure });
-  } catch (err) {
-    console.error(`closureOver failed: ${err.message}`);
-    process.exit(1);
-  }
-
-  console.log(`Generating ${names.length} doctype(s): ${names.join(', ')}\n`);
-
-  // 2. Parse JSON → def → validate, for each name in the closure.
   const defs    = [];
   const allWarn = [];
 
-  for (const name of names) {
-    // Locate the file: re-use the same index logic that closureOver uses.
-    // Simple approach: walk root for this specific name (small overhead — list is short).
-    const jsonPath = _findJsonForDoctype(root, name);
-    if (!jsonPath) {
-      console.error(`Could not locate JSON for doctype "${name}" under ${root}`);
-      process.exit(1);
-    }
-
-    let json;
+  if (stubDeps) {
+    // --stub-deps mode: planInstall splits names into full + stubs.
+    let full, stubs;
     try {
-      json = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+      ({ full, stubs } = planInstall(seeds, root));
     } catch (err) {
-      console.error(`Failed to parse ${jsonPath}: ${err.message}`);
+      console.error(`plan failed: ${err.message}`);
       process.exit(1);
     }
 
-    // D1-3: erpnextJsonToDef implements the security boundary (no depends_on spread).
-    const def = erpnextJsonToDef(json);
+    console.log(`Generating ${full.length} full + ${stubs.length} stub doctype(s).\n`);
 
-    // D1-1/D1-3: assertValidDef over EVERY def in the closure, not just seeds.
+    // Full defs: locate JSON → erpnextJsonToDef → validate (same as closure path).
+    for (const name of full) {
+      const jsonPath = _findJsonForDoctype(root, name);
+      if (!jsonPath) {
+        console.error(`Could not locate JSON for doctype "${name}" under ${root}`);
+        process.exit(1);
+      }
+
+      let json;
+      try {
+        json = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+      } catch (err) {
+        console.error(`Failed to parse ${jsonPath}: ${err.message}`);
+        process.exit(1);
+      }
+
+      const def = erpnextJsonToDef(json);
+
+      try {
+        assertValidDef(def);
+      } catch (err) {
+        console.error(`assertValidDef failed for "${name}": ${err.message}`);
+        process.exit(1);
+      }
+
+      const warns = collectWarnings(json.fields, name);
+      allWarn.push(...warns);
+
+      defs.push(def);
+    }
+
+    // Stub defs: synthesized from name alone — no JSON lookup.
+    for (const name of stubs) {
+      const def = makeStubDef(name);
+      try {
+        assertValidDef(def);
+      } catch (err) {
+        console.error(`assertValidDef failed for stub "${name}": ${err.message}`);
+        process.exit(1);
+      }
+      defs.push(def);
+    }
+
+  } else {
+    // Closure / no-closure path — byte-for-byte unchanged.
+    let names;
     try {
-      assertValidDef(def);
+      names = closureOver(seeds, root, { noClosure });
     } catch (err) {
-      console.error(`assertValidDef failed for "${name}": ${err.message}`);
+      console.error(`closureOver failed: ${err.message}`);
       process.exit(1);
     }
 
-    // Collect unsupported-bucket warnings from the original JSON fields.
-    const warns = collectWarnings(json.fields, name);
-    allWarn.push(...warns);
+    console.log(`Generating ${names.length} doctype(s): ${names.join(', ')}\n`);
 
-    defs.push(def);
+    for (const name of names) {
+      // Locate the file: re-use the same index logic that closureOver uses.
+      // Simple approach: walk root for this specific name (small overhead — list is short).
+      const jsonPath = _findJsonForDoctype(root, name);
+      if (!jsonPath) {
+        console.error(`Could not locate JSON for doctype "${name}" under ${root}`);
+        process.exit(1);
+      }
+
+      let json;
+      try {
+        json = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+      } catch (err) {
+        console.error(`Failed to parse ${jsonPath}: ${err.message}`);
+        process.exit(1);
+      }
+
+      // D1-3: erpnextJsonToDef implements the security boundary (no depends_on spread).
+      const def = erpnextJsonToDef(json);
+
+      // D1-1/D1-3: assertValidDef over EVERY def in the closure, not just seeds.
+      try {
+        assertValidDef(def);
+      } catch (err) {
+        console.error(`assertValidDef failed for "${name}": ${err.message}`);
+        process.exit(1);
+      }
+
+      // Collect unsupported-bucket warnings from the original JSON fields.
+      const warns = collectWarnings(json.fields, name);
+      allWarn.push(...warns);
+
+      defs.push(def);
+    }
   }
 
   // 3. Print any warnings before acting.

@@ -32,6 +32,7 @@ export const META_DOCTYPES = [
       { fieldname: 'name',           fieldtype: 'Data' },
       { fieldname: 'istable',        fieldtype: 'Check' },
       { fieldname: 'issingle',       fieldtype: 'Check' },
+      { fieldname: 'is_stub',        fieldtype: 'Check' },
       { fieldname: 'is_submittable', fieldtype: 'Check' },
       { fieldname: 'autoname',       fieldtype: 'Data' },
       { fieldname: 'naming_rule',    fieldtype: 'Data' },

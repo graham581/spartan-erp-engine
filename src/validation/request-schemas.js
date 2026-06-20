@@ -11,7 +11,7 @@
 import { z } from 'zod';
 
 // The three system-managed fields clients must never send
-const RESERVED_KEYS = new Set(['owner', 'docstatus', 'name']);
+const RESERVED_KEYS = new Set(['owner', 'docstatus', 'name', 'is_stub']);
 
 /**
  * Refinement that rejects a record if it contains any reserved system key.

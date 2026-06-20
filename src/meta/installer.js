@@ -114,6 +114,7 @@ export async function syncDoctype(def, store) {
     naming_rule:    def.naming_rule    ?? null,
     issingle:       def.issingle       ?? false,
     istable:        def.istable        ?? false,
+    is_stub:        def.isStub         ?? false,
     is_submittable: def.submittable    ?? false,
     scope_fields:   def.scopeFields    ?? null,
 
@@ -184,16 +185,36 @@ export async function bumpMetaVersion(store) {
  * @returns {Promise<{ ddl: string, applied: boolean, migrationPath?: string }>}
  */
 export async function migrate(def, store, opts = {}) {
-  const ddl = createTableSql(def);
-  let applied = false;
-  let migrationPath;
-  if (opts.admin) {
-    await opts.admin.applyDDL(ddl); // run DDL directly — no human db push
-    applied = true;
-  } else {
-    migrationPath = emitMigration(def, { writer: opts.writer }); // fallback: file for db push
+  // 0. Read authoritative prior state from the meta row (no DDL introspection — ruling 2)
+  const cur      = await store.get('tabDocType', def.doctype);
+  const exists   = !!cur;
+  const wasStub  = !!(cur && cur.is_stub);
+  const wantStub = def.isStub === true;
+
+  // 3. DOWNGRADE NO-OP  (exists && !wasStub && wantStub) — condition (a)
+  if (exists && !wasStub && wantStub) {
+    return { ddl: '', applied: false, skipped: 'downgrade-refused' };
+    // NO DDL, NO is_stub re-flip over a full table.
   }
-  await store.transaction((tx) => syncDoctype(def, tx)); // parent + field + perm rows = ONE atomic unit
-  await bumpMetaVersion(store);                           // SINGLE write, OUTSIDE the tx, AFTER commit (ADR F3.3)
+
+  // 1. UPGRADE  (exists && wasStub && !wantStub) — stub → full
+  if (exists && wasStub && !wantStub) {
+    const ddl = alterColumnsSql(def, []);          // existingCols=[] SAFE: ADD COLUMN IF NOT EXISTS
+    let applied = false; let migrationPath;
+    if (opts.admin) { await opts.admin.applyDDL(ddl); applied = true; }
+    else            { migrationPath = emitMigration(def, { writer: opts.writer }); }
+    await store.transaction((tx) => syncDoctype(def, tx));   // rewrites meta with is_stub=false
+    await bumpMetaVersion(store);
+    return { ddl, applied, migrationPath };
+  }
+
+  // 2/4. FRESH (!exists) OR RE-INSTALL FULL (exists && !wasStub && !wantStub)
+  //      OR FRESH STUB (!exists && wantStub) — all take CREATE TABLE IF NOT EXISTS
+  const ddl = createTableSql(def);                  // existing path, unchanged
+  let applied = false; let migrationPath;
+  if (opts.admin) { await opts.admin.applyDDL(ddl); applied = true; }
+  else            { migrationPath = emitMigration(def, { writer: opts.writer }); }
+  await store.transaction((tx) => syncDoctype(def, tx));
+  await bumpMetaVersion(store);
   return { ddl, applied, migrationPath };
 }
