@@ -52,7 +52,11 @@ export function pgTypeFor(field) {
 export function createTableSql(def) {
   const { table, fields = [] } = def;
 
-  // Framework columns — match the proven pattern from 20260620000001_customer.sql
+  // Framework columns — match the proven pattern from 20260620000001_customer.sql.
+  // parent/parenttype/parentfield are present on EVERY table (Frappe-faithful): child
+  // rows are written with these set (Document.#saveChildren), and they stay null for a
+  // top-level doc. Without them, a doctype used as a child table (Table field target)
+  // fails on insert with `column "parent" does not exist`.
   const frameworkCols = [
     '  name        text primary key',
     '  owner       text',
@@ -60,6 +64,9 @@ export function createTableSql(def) {
     '  idx         int  not null default 0',
     '  creation    timestamptz',
     '  modified    timestamptz',
+    '  parent      text',
+    '  parenttype  text',
+    '  parentfield text',
   ];
 
   // One column per non-Table field

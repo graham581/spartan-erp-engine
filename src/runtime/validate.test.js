@@ -36,6 +36,10 @@ describe('validateAgainstMeta', () => {
     await expect(validateAgainstMeta(meta, { title: 'T', qty: 'five' }, store)).rejects.toBeInstanceOf(ValidationError);
   });
 
+  it('accepts a numeric string (Postgres numeric round-trip)', async () => {
+    await expect(validateAgainstMeta(meta, { title: 'T', qty: '42' }, store)).resolves.toBeUndefined();
+  });
+
   it('rejects a duplicate unique value', async () => {
     await store.insert('tabWidget', { name: 'W1', sku: 'X' });
     await expect(validateAgainstMeta(meta, { name: 'W2', title: 'T', sku: 'X' }, store)).rejects.toBeInstanceOf(ValidationError);

@@ -102,6 +102,12 @@ describe('createTableSql', () => {
     expect(sql).toContain('modified    timestamptz');
   });
 
+  it('includes parent/parenttype/parentfield (child-table framework cols)', () => {
+    expect(sql).toContain('parent      text');
+    expect(sql).toContain('parenttype  text');
+    expect(sql).toContain('parentfield text');
+  });
+
   it('maps customer_name (Data) → text', () => {
     expect(sql).toContain('customer_name text');
   });

@@ -27,8 +27,15 @@ export async function validateAgainstMeta(meta, doc, store) {
         throw new ValidationError(`${meta.doctype}.${f.fieldname}: '${v}' not in [${opts.join(', ')}]`);
       }
     }
-    if (NUMERIC.has(f.fieldtype) && typeof v !== 'number') {
-      throw new ValidationError(`${meta.doctype}.${f.fieldname}: expected a number, got ${typeof v}`);
+    if (NUMERIC.has(f.fieldtype)) {
+      // Postgres returns numeric/Currency columns as STRINGS on round-trip (precision-safe).
+      // Accept a number OR a finite-numeric string — otherwise re-validation on submit/
+      // re-save (which loads from the DB) would reject a legitimate persisted value.
+      const numericOk = typeof v === 'number'
+        || (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)));
+      if (!numericOk) {
+        throw new ValidationError(`${meta.doctype}.${f.fieldname}: expected a number, got ${typeof v}`);
+      }
     }
     if (f.fieldtype === 'Check' && typeof v !== 'boolean' && v !== 0 && v !== 1) {
       throw new ValidationError(`${meta.doctype}.${f.fieldname}: expected boolean/0/1`);
