@@ -99,8 +99,11 @@ define-as-data → Installer → Loader → usable Document round-trip.
 1. A dedicated Supabase project (**not** the SpartanCRM prod DB). Put its keys in `.env`
    (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`; see `.env.example`). Verify with
    `node --env-file=.env scripts/check-supabase.mjs`.
-2. Apply migrations: `supabase link --project-ref <ref>` then `supabase db push`
-   (creates the meta tables + any per-doctype data tables the Installer emits).
+2. Apply the meta-core migration: `supabase link --project-ref <ref>` then `supabase db push`.
+   Per-doctype data tables are then created **automatically** by `Installer.migrate(def, store,
+   { admin: PgAdmin.fromEnv() })` — set `DATABASE_URL` (Supabase **Session pooler**, port 5432,
+   with the DB password) in `.env` and the engine runs the `CREATE TABLE` itself (no more `db push`
+   per doctype). Verify: `node --env-file=.env scripts/prove-auto-ddl.mjs`.
 3. Live-verify: `node --env-file=.env scripts/prove-customer-as-data.mjs`.
 4. Deploy: link the repo to its **own** Vercel project (not the CRM's), set the same env vars.
    Endpoints: `/` (status), `/api/health`, `/api/<Doctype>`.
