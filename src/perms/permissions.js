@@ -1,5 +1,4 @@
 import { getMeta } from '../meta/registry.js';
-import { getDocPerms } from './registry.js';
 import { PermissionError } from '../runtime/errors.js';
 
 const FRAMEWORK_FIELDS = new Set([
@@ -15,7 +14,7 @@ const FRAMEWORK_FIELDS = new Set([
  */
 export function can(ctx, doctype, op) {
   if (!ctx || !Array.isArray(ctx.roles)) return false;
-  return getDocPerms(doctype).some(
+  return getMeta(doctype).getDocPerms().some(
     (p) => (p.permlevel ?? 0) === 0 && ctx.roles.includes(p.role) && p[op] === true,
   );
 }
@@ -31,7 +30,7 @@ export function assertCan(ctx, doctype, op) {
 function levels(ctx, doctype, op) {
   const set = new Set();
   if (!ctx || !Array.isArray(ctx.roles)) return set;
-  for (const p of getDocPerms(doctype)) {
+  for (const p of getMeta(doctype).getDocPerms()) {
     if (ctx.roles.includes(p.role) && p[op] === true) set.add(p.permlevel ?? 0);
   }
   return set;

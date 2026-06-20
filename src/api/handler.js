@@ -1,4 +1,5 @@
 import { createDoc, getDoc, listDocs, updateDoc, submitDoc, cancelDoc, transitionDoc } from './service.js';
+import { ensure } from '../meta/loader.js';
 import { ValidationError, NotFoundError, PermissionError, StateError } from '../runtime/errors.js';
 
 /** Map an EngineError subclass to an HTTP status. */
@@ -26,6 +27,7 @@ function statusFor(err) {
  */
 export async function handle({ method, doctype, name, body = {}, query = {}, ctx }, store) {
   try {
+    await ensure(doctype, store); // C1: prime meta + transitive Link/Table closure before the sync pipeline
     const m = (method || 'GET').toUpperCase();
     const action = body && body.action;
     let data;

@@ -1,9 +1,13 @@
-// Registers the doctypes + permissions the deployed API serves. Imported for
-// its side effects by the Vercel routes at cold start. Until the generator is
-// rebuilt (ERPNext JSON -> generated/meta.js), doctypes are hand-registered
-// here; the generator will replace this file.
+// Cold-start registration for the deployed API.
+// registerBootMeta() pins the 6 meta-doctypes (DocType/DocField/DocPerm/Role/
+// Workflow/Workflow Transition) so the meta-as-data path works; business
+// doctypes are loaded lazily from the DB by MetaLoader.ensure() per request.
+// Customer stays hand-registered in-code until it's migrated to data via the
+// Installer (then it loads from tabDocType like any other doctype).
 import { registerDoctype } from './meta/registry.js';
-import { registerRolePerm } from './perms/registry.js';
+import { registerBootMeta } from './meta/boot-meta.js';
+
+registerBootMeta();
 
 registerDoctype({
   doctype: 'Customer',
@@ -17,7 +21,10 @@ registerDoctype({
     { fieldname: 'credit_limit', fieldtype: 'Currency', permlevel: 1 },
   ],
   childTables: [],
+  // Permissions inline on the def (read by getMeta('Customer').getDocPerms()).
+  permissions: [
+    { role: 'admin', doctype: 'Customer', permlevel: 0, read: true, write: true, create: true, delete: true },
+    { role: 'admin', doctype: 'Customer', permlevel: 1, read: true, write: true },
+    { role: 'sales', doctype: 'Customer', permlevel: 0, read: true, write: true, create: true },
+  ],
 });
-registerRolePerm({ role: 'admin', doctype: 'Customer', permlevel: 0, read: true, write: true, create: true, delete: true });
-registerRolePerm({ role: 'admin', doctype: 'Customer', permlevel: 1, read: true, write: true });
-registerRolePerm({ role: 'sales', doctype: 'Customer', permlevel: 0, read: true, write: true, create: true });

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { MemoryStore } from '../runtime/memory-store.js';
 import { registerDoctype, _resetRegistry } from '../meta/registry.js';
-import { registerRolePerm, _resetPerms } from '../perms/registry.js';
+import { registerBootMeta } from '../meta/boot-meta.js';
 import { makeContext } from '../perms/context.js';
 import { handle } from './handler.js';
 
@@ -14,9 +14,11 @@ function seed() {
       { fieldname: 'margin', fieldtype: 'Currency', permlevel: 1 },
     ],
     childTables: [],
+    permissions: [
+      { role: 'rep', doctype: 'Job', permlevel: 0, read: true, write: true, create: true },
+      { role: 'viewer', doctype: 'Job', permlevel: 0, read: true },
+    ],
   });
-  registerRolePerm({ role: 'rep', doctype: 'Job', permlevel: 0, read: true, write: true, create: true });
-  registerRolePerm({ role: 'viewer', doctype: 'Job', permlevel: 0, read: true });
 }
 
 const rep = makeContext({ user: 'rep@x', roles: ['rep'], scopes: { branch: 'VIC' }, ownerOnly: true });
@@ -25,7 +27,7 @@ const viewer = makeContext({ user: 'v@x', roles: ['viewer'], scopes: { branch: '
 describe('handler — method/action dispatch + error→status', () => {
   /** @type {MemoryStore} */
   let store;
-  beforeEach(() => { _resetRegistry(); _resetPerms(); seed(); store = new MemoryStore(); });
+  beforeEach(() => { _resetRegistry(); registerBootMeta(); seed(); store = new MemoryStore(); });
 
   it('POST collection creates -> 200', async () => {
     const r = await handle({ method: 'POST', doctype: 'Job', name: null, body: { title: 'A', branch: 'VIC' }, ctx: rep }, store);

@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { MemoryStore } from '../runtime/memory-store.js';
 import { registerDoctype, _resetRegistry } from '../meta/registry.js';
-import { registerRolePerm, _resetPerms } from '../perms/registry.js';
 import { makeContext } from '../perms/context.js';
 import { createDoc, getDoc, listDocs, updateDoc, submitDoc } from './service.js';
 import { PermissionError, NotFoundError } from '../runtime/errors.js';
@@ -19,13 +18,15 @@ function seed() {
       { fieldname: 'margin', fieldtype: 'Currency', permlevel: 1 },
     ],
     childTables: [],
+    permissions: [
+      { role: 'admin', doctype: 'Job', permlevel: 0, read: true, write: true, create: true, submit: true, cancel: true, delete: true },
+      { role: 'admin', doctype: 'Job', permlevel: 1, read: true, write: true },
+      { role: 'manager', doctype: 'Job', permlevel: 0, read: true, write: true, create: true, submit: true, cancel: true },
+      { role: 'manager', doctype: 'Job', permlevel: 1, read: true },
+      { role: 'rep', doctype: 'Job', permlevel: 0, read: true, write: true, create: true },
+      { role: 'viewer', doctype: 'Job', permlevel: 0, read: true },
+    ],
   });
-  registerRolePerm({ role: 'admin', doctype: 'Job', permlevel: 0, read: true, write: true, create: true, submit: true, cancel: true, delete: true });
-  registerRolePerm({ role: 'admin', doctype: 'Job', permlevel: 1, read: true, write: true });
-  registerRolePerm({ role: 'manager', doctype: 'Job', permlevel: 0, read: true, write: true, create: true, submit: true, cancel: true });
-  registerRolePerm({ role: 'manager', doctype: 'Job', permlevel: 1, read: true });
-  registerRolePerm({ role: 'rep', doctype: 'Job', permlevel: 0, read: true, write: true, create: true });
-  registerRolePerm({ role: 'viewer', doctype: 'Job', permlevel: 0, read: true });
 }
 
 const admin = makeContext({ user: 'admin@x', roles: ['admin'], unrestricted: true });
@@ -36,7 +37,7 @@ const viewer = makeContext({ user: 'v@x', roles: ['viewer'], scopes: { branch: '
 describe('service — adversarial matrix through the real code path', () => {
   /** @type {MemoryStore} */
   let store;
-  beforeEach(() => { _resetRegistry(); _resetPerms(); seed(); store = new MemoryStore(); });
+  beforeEach(() => { _resetRegistry(); seed(); store = new MemoryStore(); });
 
   it('create stamps owner and gates the op', async () => {
     const out = await createDoc(rep, 'Job', { title: 'Kitchen', branch: 'VIC' }, store);

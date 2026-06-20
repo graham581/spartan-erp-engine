@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { registerDoctype, _resetRegistry } from '../meta/registry.js';
-import { registerRolePerm, _resetPerms } from './registry.js';
 import { makeContext, SYSTEM } from './context.js';
 import { can, assertCan, visibleFields, maskRead, assertCanWrite, queryConditions } from './permissions.js';
 import { PermissionError } from '../runtime/errors.js';
@@ -18,17 +17,19 @@ function seed() {
       { fieldname: 'margin', fieldtype: 'Currency', permlevel: 1 },
     ],
     childTables: [],
+    permissions: [
+      // admin: everything, incl. permlevel-1 read+write
+      { role: 'admin', doctype: 'Job', permlevel: 0, read: true, write: true, create: true, submit: true, cancel: true, delete: true },
+      { role: 'admin', doctype: 'Job', permlevel: 1, read: true, write: true },
+      // manager: ops minus delete; can READ margin but not write it
+      { role: 'manager', doctype: 'Job', permlevel: 0, read: true, write: true, create: true, submit: true, cancel: true },
+      { role: 'manager', doctype: 'Job', permlevel: 1, read: true },
+      // rep: read/write/create at level 0 only (no margin, no submit/cancel/delete)
+      { role: 'rep', doctype: 'Job', permlevel: 0, read: true, write: true, create: true },
+      // viewer: read only at level 0
+      { role: 'viewer', doctype: 'Job', permlevel: 0, read: true },
+    ],
   });
-  // admin: everything, incl. permlevel-1 read+write
-  registerRolePerm({ role: 'admin', doctype: 'Job', permlevel: 0, read: true, write: true, create: true, submit: true, cancel: true, delete: true });
-  registerRolePerm({ role: 'admin', doctype: 'Job', permlevel: 1, read: true, write: true });
-  // manager: ops minus delete; can READ margin but not write it
-  registerRolePerm({ role: 'manager', doctype: 'Job', permlevel: 0, read: true, write: true, create: true, submit: true, cancel: true });
-  registerRolePerm({ role: 'manager', doctype: 'Job', permlevel: 1, read: true });
-  // rep: read/write/create at level 0 only (no margin, no submit/cancel/delete)
-  registerRolePerm({ role: 'rep', doctype: 'Job', permlevel: 0, read: true, write: true, create: true });
-  // viewer: read only at level 0
-  registerRolePerm({ role: 'viewer', doctype: 'Job', permlevel: 0, read: true });
 }
 
 const admin = makeContext({ user: 'admin@x', roles: ['admin'], unrestricted: true });
@@ -38,7 +39,7 @@ const viewer = makeContext({ user: 'v@x', roles: ['viewer'], scopes: { branch: '
 const stranger = makeContext({ user: 'no@x', roles: ['nobody'] });
 
 describe('permissions — op gate (docperm)', () => {
-  beforeEach(() => { _resetRegistry(); _resetPerms(); seed(); });
+  beforeEach(() => { _resetRegistry(); seed(); });
 
   it('grants per the docperm matrix', () => {
     expect(can(admin, 'Job', 'delete')).toBe(true);
@@ -65,7 +66,7 @@ describe('permissions — op gate (docperm)', () => {
 });
 
 describe('permissions — field level (permlevel)', () => {
-  beforeEach(() => { _resetRegistry(); _resetPerms(); seed(); });
+  beforeEach(() => { _resetRegistry(); seed(); });
 
   it('manager sees the margin field; rep does not', () => {
     expect(visibleFields(manager, 'Job')).toContain('margin');
@@ -92,7 +93,7 @@ describe('permissions — field level (permlevel)', () => {
 });
 
 describe('permissions — row scope (query conditions)', () => {
-  beforeEach(() => { _resetRegistry(); _resetPerms(); seed(); });
+  beforeEach(() => { _resetRegistry(); seed(); });
 
   it('admin is unrestricted by EXPLICIT grant (no filter), not a role bypass', () => {
     expect(queryConditions(admin, 'Job')).toEqual({});
