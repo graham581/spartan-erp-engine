@@ -161,3 +161,33 @@ export async function bumpMetaVersion(store) {
     await store.insert('meta_version', { name: 'meta_version', version });
   }
 }
+
+/**
+ * Full migrate for a doctype: apply DDL → upsert meta rows → bump version.
+ *
+ * - With opts.admin (a PgAdmin), the data-table DDL is EXECUTED directly — no
+ *   human `supabase db push`. Without it, the DDL is emitted to a migration
+ *   file (opts.writer is honoured for tests) for the human db-push path.
+ * Ordering: DDL first (so the data table exists for later inserts), then the
+ * meta rows (PostgREST), then the version bump. Idempotent throughout
+ * (CREATE TABLE IF NOT EXISTS, upsert-by-name, set-not-append version).
+ *
+ * @param {object} def  doctype definition (doctype/table/fields/permissions/...)
+ * @param {import('../runtime/store.js').Store} store
+ * @param {{ admin?: import('./pg-admin.js').PgAdmin, writer?: (path:string, sql:string)=>void }} [opts]
+ * @returns {Promise<{ ddl: string, applied: boolean, migrationPath?: string }>}
+ */
+export async function migrate(def, store, opts = {}) {
+  const ddl = createTableSql(def);
+  let applied = false;
+  let migrationPath;
+  if (opts.admin) {
+    await opts.admin.applyDDL(ddl); // run DDL directly — no human db push
+    applied = true;
+  } else {
+    migrationPath = emitMigration(def, { writer: opts.writer }); // fallback: file for db push
+  }
+  await syncDoctype(def, store);
+  await bumpMetaVersion(store);
+  return { ddl, applied, migrationPath };
+}
