@@ -1,4 +1,9 @@
+import { Meta } from './meta.js';
 import { NotFoundError } from '../runtime/errors.js';
+
+// ---------------------------------------------------------------------------
+// JSDoc typedefs — kept here because other modules import them by path.
+// ---------------------------------------------------------------------------
 
 /**
  * @typedef {Object} FieldDef
@@ -10,11 +15,24 @@ import { NotFoundError } from '../runtime/errors.js';
  * @property {boolean} [readOnly]
  * @property {boolean} [unique]   value must be unique across the table
  * @property {string} [fetchFrom] 'linkField.sourceField' — copy from a linked doc on save
+ * @property {number} [idx]
  *
  * @typedef {Object} ChildTableDef
  * @property {string} field       parent fieldname holding the rows
  * @property {string} doctype     child doctype
  * @property {string} table       child table name
+ *
+ * @typedef {Object} DocPerm
+ * @property {string} role
+ * @property {string} doctype
+ * @property {number} [permlevel]  default 0
+ * @property {boolean} [read]
+ * @property {boolean} [write]
+ * @property {boolean} [create]
+ * @property {boolean} [submit]
+ * @property {boolean} [cancel]
+ * @property {boolean} [delete]
+ * @property {boolean} [ifOwner]
  *
  * @typedef {Object} DocMeta
  * @property {string} doctype
@@ -23,33 +41,133 @@ import { NotFoundError } from '../runtime/errors.js';
  * @property {string} [autoname]  'hash' | 'field:<name>' | naming-series prefix
  * @property {FieldDef[]} fields
  * @property {ChildTableDef[]} childTables
- * @property {string[]} [scopeFields]  row-scope fields (e.g. ['branch']) for permission query conditions
+ * @property {string[]} [scopeFields]  row-scope fields (e.g. ['branch']) for query conditions
+ * @property {DocPerm[]} [permissions]
  */
 
-/** @type {Record<string, DocMeta>} */
-const META = {};
+// ---------------------------------------------------------------------------
+// Module-scope singleton state (warm-lambda cache)
+// ---------------------------------------------------------------------------
+
+/** @type {Map<string, Meta>} */
+const cache = new Map();
+/** @type {Set<string>} — entries in this set are never evicted by invalidate() */
+const pinned = new Set();
+/** @type {string|null} */
+let version = null;
+/** @type {number} */
+let versionCheckedAt = 0;
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 /**
- * Register (or replace) a doctype definition. The generator's output calls this
- * (Phase: generator rebuild); seed/test fixtures call it directly.
- * @param {DocMeta} meta
+ * Get a Meta for the doctype. SYNC, cache-only. Throws NotFoundError on a miss
+ * (a miss is a programming error — something wasn't primed).
+ * @param {string} doctype
+ * @returns {Meta}
  */
-export function registerDoctype(meta) {
-  META[meta.doctype] = { childTables: [], fields: [], ...meta };
-}
-
-/** @param {string} doctype @returns {DocMeta} */
 export function getMeta(doctype) {
-  const m = META[doctype];
+  const m = cache.get(doctype);
   if (!m) throw new NotFoundError(`Unknown doctype: ${doctype}`);
   return m;
 }
 
-export function allDoctypes() {
-  return Object.keys(META);
+/**
+ * @param {string} doctype
+ * @returns {boolean}
+ */
+export function hasMeta(doctype) {
+  return cache.has(doctype);
 }
 
-/** Test/dev only: clear the registry between cases. */
+/**
+ * Store a Meta in the cache (called by the loader or primeFrom).
+ * @param {string} doctype
+ * @param {Meta|DocMeta} meta
+ * @param {boolean} [isPinned]
+ */
+export function setMeta(doctype, meta, isPinned = false) {
+  const m = meta instanceof Meta ? meta : new Meta(meta);
+  cache.set(doctype, m);
+  if (isPinned) pinned.add(doctype);
+}
+
+/** @returns {string[]} */
+export function allDoctypes() {
+  return Array.from(cache.keys());
+}
+
+/**
+ * Prime the cache from an array of plain DocMeta or Meta objects.
+ * @param {Array<DocMeta|Meta>} metas
+ * @param {boolean} [isPinned]
+ */
+export function primeFrom(metas, isPinned = false) {
+  for (const def of metas) {
+    const doctype = def instanceof Meta ? def.doctype : def.doctype;
+    setMeta(doctype, def, isPinned);
+  }
+}
+
+/**
+ * Invalidate non-pinned cache entries. If doctype is provided, clears only that
+ * entry (unless pinned). If omitted, clears all non-pinned entries.
+ * @param {string} [doctype]
+ */
+export function invalidate(doctype) {
+  if (doctype !== undefined) {
+    if (!pinned.has(doctype)) cache.delete(doctype);
+  } else {
+    for (const key of Array.from(cache.keys())) {
+      if (!pinned.has(key)) cache.delete(key);
+    }
+  }
+}
+
+/**
+ * Version state co-located with the cache (used by MetaLoader.ensureFresh).
+ * @returns {{ version: string|null, versionCheckedAt: number }}
+ */
+export function getVersionState() {
+  return { version, versionCheckedAt };
+}
+
+/**
+ * @param {string|null} v
+ * @param {number} checkedAt
+ */
+export function setVersionState(v, checkedAt) {
+  version = v;
+  versionCheckedAt = checkedAt;
+}
+
+// ---------------------------------------------------------------------------
+// Test-only reset
+// ---------------------------------------------------------------------------
+
+/** Test only — clears cache AND pinned set AND version state. */
 export function _resetRegistry() {
-  for (const k of Object.keys(META)) delete META[k];
+  cache.clear();
+  pinned.clear();
+  version = null;
+  versionCheckedAt = 0;
+}
+
+// ---------------------------------------------------------------------------
+// TEMPORARY backward-compat shim (PR-1 bridge)
+//
+// Existing tests import registerDoctype from this path and call it in
+// beforeEach. This thin wrapper routes through primeFrom (and therefore Meta)
+// so the 56-test suite stays green this wave. It is REMOVED in PR-6 once
+// every caller has migrated to seedViaLoader / primeFrom.
+// ---------------------------------------------------------------------------
+
+/**
+ * @deprecated Use primeFrom() or seedViaLoader() instead.
+ * @param {DocMeta} meta
+ */
+export function registerDoctype(meta) {
+  primeFrom([{ childTables: [], fields: [], permissions: [], scopeFields: [], ...meta }], false);
 }

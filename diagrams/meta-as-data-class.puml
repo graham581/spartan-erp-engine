@@ -1,0 +1,177 @@
+@startuml meta-as-data-class
+' SpartanERP engine — META-AS-DATA to-be design (architect) — REVISION 2 (post-critique).
+' Conservative, valid PlantUML. Stateful = class; pure-fn module = class <<module>>.
+' Rev2 fixes the seams critique flagged:
+'  C1  getMeta stays SYNC/cache-only; async PRIME at handler boundary (Handler -> MetaLoader.ensure).
+'  C2  the six meta-doctypes are PINNED in MetaRegistry (invalidate never evicts them).
+'  C3  Installer EMITS DDL to a migration file (human db push); it NEVER runs DDL via Store.
+'  C4/C5  MetaLoader maps snake_case->camelCase and 0/1->boolean when assembling FieldDef/DocPerm.
+' Mirrors Frappe: get_meta(cached) over client_cache, Meta is itself a Document of DocType.
+' Cited in docs/adr-meta-as-data.md.
+
+skinparam classAttributeIconSize 0
+hide empty members
+
+' ===================== META-AS-DATA: storage rows (data tables) =====================
+package "Meta-doctypes (rows in the DB, like any other doc)" {
+  class "tabDocType"    as TabDocType    <<table>>
+  class "tabDocField"   as TabDocField   <<table>>
+  class "tabDocPerm"    as TabDocPerm    <<table>>
+  class "tabRole"       as TabRole       <<table>>
+  class "tabWorkflow"   as TabWorkflow   <<table>>
+  class "tabWorkflowTransition" as TabWfT <<table>>
+
+  TabDocType "1" *-- "0..*" TabDocField  : fields  (parent=DocType)
+  TabDocType "1" *-- "0..*" TabDocPerm   : permissions (parent=DocType)
+  TabWorkflow "1" *-- "0..*" TabWfT      : transitions (parent=Workflow)
+  TabDocPerm  ..> TabRole                : role -> name
+  TabWorkflow ..> TabDocType             : document_type
+}
+
+' ===================== BOOTSTRAP: minimal in-code meta-of-meta (PINNED) =============
+class BootMeta <<module>> {
+  ' The chicken-and-egg seed: hand-written DocMeta for the meta-doctypes
+  ' themselves so the loader can read tabDocType etc. (DocType IS a DocType).
+  ' All six are primed PINNED -> never evicted by invalidate() (C2).
+  +META_DOCTYPES : DocMeta[]   ' DocType, DocField, DocPerm, Role, Workflow, WorkflowTransition
+  +registerBootMeta() : void   ' MetaRegistry.primeFrom(META_DOCTYPES, pinned=true)
+}
+
+' ===================== STATEFUL: Meta + the registry =====================
+class Meta {
+  ' Frappe parity: Meta wraps a DocType doc + its DocField/DocPerm children.
+  +doctype : string
+  +table : string
+  +submittable : boolean
+  +autoname : string
+  +fields : FieldDef[]          ' camelCase (readOnly/fetchFrom) — mapped by MetaLoader (C4)
+  +childTables : ChildTableDef[] ' .table derived via getMeta(field.options).table (M4)
+  +scopeFields : string[]
+  +permissions : DocPerm[]       ' DocPerm children, parent->doctype + 0/1->bool (C5)
+  +getField(fieldname) : FieldDef
+  +getDocPerms() : DocPerm[]
+}
+
+class MetaRegistry {
+  ' Module-scope SYNC cache-only registry for stateless Vercel (C1).
+  ' get()/has() NEVER hit the DB; get() throws NotFoundError on a miss (fail-fast).
+  ' Frappe parity: client_cache doctype_meta::X (meta.py:72), but POLL not push (M2).
+  -cache : Map<string, Meta>
+  -pinned : Set<string>          ' the six meta-doctypes (C2)
+  -version : string|null
+  -versionCheckedAt : number     ' for META_VERSION_TTL_MS staleness window (M2)
+  +get(doctype) : Meta           ' SYNC, cache-only, throw on miss
+  +has(doctype) : boolean
+  +set(doctype, meta, pinned)
+  +allDoctypes() : string[]
+  +primeFrom(metas, pinned) : void
+  +invalidate(doctype?) : void   ' clears NON-pinned only (C2)
+  +_reset() : void               ' test only
+}
+
+class MetaLoader {
+  ' Hydrates Meta from the DB and PRIMES the cache. The ONLY async meta path.
+  -store : Store
+  -registry : MetaRegistry
+  +ensure(doctype, store) : Promise<void>  ' PRIME: ensureFresh + transitive Link/Table closure,
+                                           ' load deepest-child-first into cache (C1)
+  +load(doctype, store) : Promise<Meta>    ' read tabDocType+Field+Perm; map snake->camel,
+                                           ' 0/1->bool; derive childTables (C4/C5/M4)
+  +ensureFresh(store) : Promise<void>      ' meta_version poll, TTL-bounded (M1/M2)
+}
+
+class Installer <<module>> {
+  ' "migrate" equivalent. TWO one-directional jobs (C3):
+  '  (1) upsert meta ROWS via Store/Document.save() — valid.
+  '  (2) EMIT DDL to a migration file — NEVER runs DDL (Store is PostgREST-only).
+  ' Ordering: emit+human db push FIRST, then upsert rows, then bump version.
+  +syncDoctype(def, store) : Promise<void>     ' upsert tabDocType/Field/Perm rows
+  +emitMigration(def) : string                 ' write supabase/migrations/<ts>_<dt>.sql
+  +bumpMetaVersion(store) : Promise<void>       ' set (not append) meta_version row
+}
+
+class DDLEmitter <<module>> {
+  ' PURE: idempotent SQL strings for tab<Doctype>. No DB access.
+  +createTableSql(def) : string         ' create table if not exists (boolean flag cols)
+  +alterColumnsSql(def, existingCols) : string  ' add column if not exists
+}
+
+' ===================== EXISTING runtime (TRULY unchanged this time) =================
+class Store <<abstract>> {
+  ' PostgREST-backed in prod -> CANNOT run DDL (C3).
+  +get(table, name)
+  +insert(table, row)
+  +update(table, name, row)
+  +list(table, opts)
+  +getChildren(table, parent, parenttype, parentfield)
+  +deleteChildren(table, parent, parenttype, parentfield)
+}
+class SupabaseStore
+class MemoryStore
+Store <|-- SupabaseStore
+Store <|-- MemoryStore
+
+class Handler <<module>> {
+  ' api/handler.js — already async. PRIME point (C1/M1).
+  +handle(req, store) : Promise<Result>  ' await MetaLoader.ensure(doctype, store) FIRST,
+                                         ' then dispatch to the SYNC-getMeta service layer
+}
+
+class Document {
+  +doctype : string
+  +doc : Row
+  +meta : Meta                  ' = getMeta(doctype) SYNC in ctor — warm cache (unchanged)
+  +insert() ; +save()
+}
+class SubmittableDocument
+Document <|-- SubmittableDocument
+
+class PermissionEngine <<module>> {
+  ' perms/permissions.js — reads DocPerm from Meta (parent->doctype, bool). Logic unchanged.
+  +can(ctx, doctype, op)
+  +visibleFields(ctx, doctype)
+  +maskRead(ctx, doctype, doc)
+  +assertCanWrite(ctx, doctype, before, after)
+  +queryConditions(ctx, doctype)
+}
+
+class WorkflowEngine <<module>> {
+  ' workflow/workflow.js — getWorkflow assembles declarative def from tabWorkflow rows
+  ' and RE-ATTACHES condition/onTransition closures from WorkflowHooks (critique PASS).
+  +transition(ctx, d, action, store)
+  +availableActions(ctx, d)
+}
+
+class WorkflowHooks <<module>> {
+  ' workflow/hooks.js — in-code closures that can't be DB rows; keyed (doctype, action).
+  +WORKFLOW_HOOKS : Map<"Doctype::action", {condition?, onTransition?}>
+}
+
+' ===================== RELATIONSHIPS =====================
+Handler --> MetaLoader        : await ensure(doctype) BEFORE sync dispatch (C1)
+Handler ..> PermissionEngine  : dispatch (service layer, sync getMeta)
+MetaLoader --> MetaRegistry   : primes / sets
+MetaLoader --> Store          : reads meta rows (get/getChildren)
+MetaLoader ..> BootMeta       : pinned DocType meta lets tabDocType be read (C2)
+MetaRegistry o-- "0..*" Meta  : caches (pinned + loaded)
+BootMeta --> MetaRegistry     : primeFrom(..., pinned=true)
+Document --> MetaRegistry      : meta = get(doctype)  (SYNC hit, post-prime)
+PermissionEngine --> MetaRegistry : reads Meta (fields + DocPerm)
+WorkflowEngine   --> MetaRegistry : reads declarative workflow def
+WorkflowEngine   --> WorkflowHooks : re-attaches condition/onTransition by (doctype,action)
+Installer --> Store           : upserts meta ROWS only (C3)
+Installer --> DDLEmitter      : emits migration SQL -> file -> human db push (C3)
+
+note bottom of Installer
+  Installer NEVER runs DDL via Store (PostgREST can't).
+  Order: emit migration -> human `supabase db push` ->
+  upsert meta rows -> bumpMetaVersion.
+end note
+
+note bottom of BootMeta
+  Retires src/meta/registry.js's hand-fed META,
+  src/perms/registry.js, src/workflow/registry.js:
+  DocPerm -> DocType.permissions children;
+  WorkflowDef -> tabWorkflow rows + in-code WorkflowHooks.
+end note
+@enduml
