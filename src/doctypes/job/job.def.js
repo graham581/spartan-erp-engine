@@ -31,10 +31,13 @@ export const JobDef = {
 
   fields: [
     // --- identity / scope -----------------------------------------------
-    { fieldname: 'entity',       fieldtype: 'Select',   options: ['VIC', 'ACT'], reqd: true,  permlevel: 0 },
+    { fieldname: 'entity',       fieldtype: 'Select',   options: 'VIC\nACT', reqd: true,  permlevel: 0 },
 
     // --- workflow state (initial 'Won'; workflow.js:97 reads this default) --
-    { fieldname: 'status',       fieldtype: 'Select',   options: JOB_STATES, default: 'Won', permlevel: 0 },
+    // Select options are a NEWLINE-delimited string (Frappe convention): an array does
+    // not survive the text-column round-trip (stored as 'a,b' → optionList splits on \n
+    // → one element → false negative). The generator emits \n-strings too.
+    { fieldname: 'status',       fieldtype: 'Select',   options: JOB_STATES.join('\n'), default: 'Won', permlevel: 0 },
 
     // --- links ----------------------------------------------------------
     { fieldname: 'customer',     fieldtype: 'Link',     options: 'Customer',   reqd: true,  permlevel: 0 },
