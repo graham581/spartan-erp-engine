@@ -191,7 +191,7 @@ export async function migrate(def, store, opts = {}) {
   } else {
     migrationPath = emitMigration(def, { writer: opts.writer }); // fallback: file for db push
   }
-  await syncDoctype(def, store);
-  await bumpMetaVersion(store);
+  await store.transaction((tx) => syncDoctype(def, tx)); // parent + field + perm rows = ONE atomic unit
+  await bumpMetaVersion(store);                           // SINGLE write, OUTSIDE the tx, AFTER commit (ADR F3.3)
   return { ddl, applied, migrationPath };
 }

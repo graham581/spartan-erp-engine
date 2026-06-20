@@ -67,20 +67,24 @@ export async function updateDoc(ctx, doctype, name, patch, store) {
 
 /** @param {import('../perms/context.js').Ctx} ctx */
 export async function submitDoc(ctx, doctype, name, store) {
-  assertCan(ctx, doctype, 'submit');
-  const d = await loadInScope(ctx, doctype, name, store);
-  if (typeof d.submit !== 'function') throw new StateError(`${doctype} is not submittable`);
-  await d.submit();
-  return maskRead(ctx, doctype, d.doc);
+  return store.transaction(async (txStore) => {
+    assertCan(ctx, doctype, 'submit');                          // FIRST — 403 before any PG work
+    const d = await loadInScope(ctx, doctype, name, txStore);   // load on tx (read-your-writes; d.store===txStore)
+    if (typeof d.submit !== 'function') throw new StateError(`${doctype} is not submittable`);
+    await d.submit();                                           // save + onSubmit all on the tx
+    return maskRead(ctx, doctype, d.doc);
+  });
 }
 
 /** @param {import('../perms/context.js').Ctx} ctx */
 export async function cancelDoc(ctx, doctype, name, store) {
-  assertCan(ctx, doctype, 'cancel');
-  const d = await loadInScope(ctx, doctype, name, store);
-  if (typeof d.cancel !== 'function') throw new StateError(`${doctype} is not submittable`);
-  await d.cancel();
-  return maskRead(ctx, doctype, d.doc);
+  return store.transaction(async (txStore) => {
+    assertCan(ctx, doctype, 'cancel');                          // FIRST — 403 before any PG work
+    const d = await loadInScope(ctx, doctype, name, txStore);   // load on tx (read-your-writes; d.store===txStore)
+    if (typeof d.cancel !== 'function') throw new StateError(`${doctype} is not submittable`);
+    await d.cancel();                                           // save + onCancel all on the tx
+    return maskRead(ctx, doctype, d.doc);
+  });
 }
 
 /**
@@ -89,8 +93,10 @@ export async function cancelDoc(ctx, doctype, name, store) {
  * @param {import('../perms/context.js').Ctx} ctx
  */
 export async function transitionDoc(ctx, doctype, name, action, store) {
-  assertCan(ctx, doctype, 'write');
-  const d = await loadInScope(ctx, doctype, name, store);
-  await transition(ctx, d, action, store);
-  return maskRead(ctx, doctype, d.doc);
+  return store.transaction(async (txStore) => {
+    assertCan(ctx, doctype, 'write');                           // FIRST — 403 before any PG work; illegal action -> StateError -> 409
+    const d = await loadInScope(ctx, doctype, name, txStore);   // load on tx (read-your-writes; d.store===txStore)
+    await transition(ctx, d, action, txStore);                  // save + onTransition + tabWorkflowAction all on the tx
+    return maskRead(ctx, doctype, d.doc);
+  });
 }

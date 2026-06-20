@@ -31,8 +31,21 @@ export class Document {
   async validate() {}
   async beforeSave() {}
   async beforeSubmit() {}
+  /**
+   * F1 INVARIANT: this hook runs INSIDE the submit transaction (on the tx-bound store).
+   * A hook that creates another doc MUST construct it with `this.store` — the tx-bound store —
+   * e.g. `await newDoc('GL Entry', data, this.store).insert()`.
+   * NEVER capture an outer store or call `*.fromEnv()`; either commits OUTSIDE the tx
+   * and breaks atomicity. (ADR §2.3)
+   */
   async onSubmit() {}
   async beforeCancel() {}
+  /**
+   * F1 INVARIANT: this hook runs INSIDE the cancel transaction (on the tx-bound store).
+   * A hook that creates another doc MUST construct it with `this.store` — the tx-bound store.
+   * NEVER capture an outer store or call `*.fromEnv()`; either commits OUTSIDE the tx
+   * and breaks atomicity. (ADR §2.3)
+   */
   async onCancel() {}
 
   // ---- persistence ----

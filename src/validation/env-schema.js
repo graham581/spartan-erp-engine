@@ -1,8 +1,9 @@
 // env-schema.js — Lazy env validation for startup boundaries.
 //
-// TWO SEPARATE schemas (B2 / ADR §1c):
-//   EnvSchema       — SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY (for SupabaseStore.fromEnv)
-//   PgAdminEnvSchema — DATABASE_URL only (for PgAdmin.fromEnv)
+// THREE SEPARATE schemas (B2 / ADR §1c):
+//   EnvSchema         — SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY (for SupabaseStore.fromEnv)
+//   PgAdminEnvSchema  — DATABASE_URL only (for PgAdmin.fromEnv)
+//   PgStoreEnvSchema  — DATABASE_URL_POOLER only (for PgStore.fromEnv, transaction pooler :6543)
 //
 // Env failures are operator/startup errors, NOT request 400s.
 // These functions throw a plain Error, never a ValidationError.
@@ -19,6 +20,11 @@ const EnvSchema = z.object({
 // DATABASE_URL is deliberately NOT in EnvSchema (B2)
 const PgAdminEnvSchema = z.object({
   DATABASE_URL: z.string().min(1),
+});
+
+// DATABASE_URL_POOLER is the transaction pooler (:6543) connection string (B2)
+const PgStoreEnvSchema = z.object({
+  DATABASE_URL_POOLER: z.string().min(1),
 });
 
 /**
@@ -49,6 +55,21 @@ export function loadPgAdminEnv(env = process.env) {
   if (!r.success) {
     // Message must match /DATABASE_URL/ — pg-admin.test.js:21-27 asserts this
     throw new Error('PgAdmin: set DATABASE_URL (Supabase Postgres connection string WITH the DB password, session mode)');
+  }
+  return r.data;
+}
+
+/**
+ * Validate and return DATABASE_URL_POOLER for PgStore (transaction pooler :6543).
+ * Throws a plain Error matching /DATABASE_URL_POOLER/ on missing/malformed key.
+ *
+ * @param {Record<string, string|undefined>} [env]  defaults to process.env
+ * @returns {{ DATABASE_URL_POOLER: string }}
+ */
+export function loadPgStoreEnv(env = process.env) {
+  const r = PgStoreEnvSchema.safeParse(env);
+  if (!r.success) {
+    throw new Error('PgStore: set DATABASE_URL_POOLER (Supabase transaction pooler connection string, port 6543)');
   }
   return r.data;
 }

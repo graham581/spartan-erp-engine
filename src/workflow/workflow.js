@@ -149,6 +149,9 @@ export async function transition(ctx, d, action, store) {
 
   d.doc[wf.stateField] = t.to;
   await d.save(); // runs validate/links/immutability; not submittable -> state field is writable
+  // F1 INVARIANT: `store` here IS the tx-bound store (passed through from transitionDoc).
+  // An onTransition hook that creates another doc MUST use this `store` arg — NEVER a captured
+  // outer store or `*.fromEnv()`; either commits OUTSIDE the tx and breaks atomicity. (ADR §2.3)
   if (typeof t.onTransition === 'function') await t.onTransition(d.doc, ctx, store);
 
   await store.insert(LOG_TABLE, {

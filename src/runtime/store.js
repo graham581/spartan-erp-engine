@@ -32,4 +32,18 @@ export class Store {
 
   /** @returns {Promise<void>} */
   async deleteChildren(table, parent, parenttype, parentfield) { throw new Error('Store.deleteChildren not implemented'); }
+
+  /** Atomically allocate the next counter for a naming-series prefix.
+   *  @param {string} prefix
+   *  @returns {Promise<number|null>}  new value, or null if no atomic counter (caller falls back). */
+  async nextSeries(prefix) { return null; }
+
+  /** Run fn in a transaction; the arg is a tx-bound Store (read-your-writes).
+   *  Base is a PASS-THROUGH (no real tx) — load-bearing for MemoryStore tests.
+   *  @template T @param {(txStore: Store) => Promise<T>} fn @returns {Promise<T>} */
+  async transaction(fn) { return await fn(this); }
+
+  /** Capability flag — true iff transaction(fn) gives real (or pass-through-correct) atomicity.
+   *  Base false; subclasses override. The handler selector reads THIS, never instanceof. */
+  supportsTransactions = false;
 }

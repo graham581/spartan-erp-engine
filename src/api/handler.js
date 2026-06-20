@@ -3,6 +3,12 @@ import { ensure } from '../meta/loader.js';
 import { ValidationError, NotFoundError, PermissionError, StateError } from '../runtime/errors.js';
 import { parseOrThrow } from '../validation/zod-bridge.js';
 import { CreatePayloadSchema, UpdatePatchSchema, ActionBodySchema, ListQuerySchema } from '../validation/request-schemas.js';
+import { PgStore } from '../runtime/pg-store.js';
+
+// Lazy module-scope singleton — resolved ONLY when the injected store can't transact (ADR R1).
+// Short-circuits for MemoryStore (supportsTransactions===true) so hermetic tests never touch this.
+let _pg;
+function pgStore() { return (_pg ??= PgStore.fromEnv()); }
 
 /** Map an EngineError subclass to an HTTP status. */
 function statusFor(err) {
@@ -56,10 +62,14 @@ export async function handle({ method, doctype, name, body = {}, query = {}, ctx
     } else if (m === 'GET') {
       data = await getDoc(ctx, doctype, name, store);
     } else if (m === 'POST') {
-      if (action === 'submit') data = await submitDoc(ctx, doctype, name, store);
-      else if (action === 'cancel') data = await cancelDoc(ctx, doctype, name, store);
-      else if (action) data = await transitionDoc(ctx, doctype, name, action, store); // declarative workflow action
-      else data = await updateDoc(ctx, doctype, name, body, store);
+      // For atomic ops (submit / cancel / workflow action) pick a tx-capable store.
+      // MemoryStore.supportsTransactions===true => txStore===store (pgStore() never called).
+      // SupabaseStore.supportsTransactions===false => upgrades to the PgStore singleton.
+      const txStore = store.supportsTransactions ? store : pgStore();
+      if (action === 'submit') data = await submitDoc(ctx, doctype, name, txStore);
+      else if (action === 'cancel') data = await cancelDoc(ctx, doctype, name, txStore);
+      else if (action) data = await transitionDoc(ctx, doctype, name, action, txStore); // declarative workflow action
+      else data = await updateDoc(ctx, doctype, name, body, store); // single-write; no upgrade
     } else {
       return { status: 405, body: { error: `${m} not allowed`, type: 'MethodNotAllowed' } };
     }

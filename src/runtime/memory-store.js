@@ -7,12 +7,23 @@ import { Store } from './store.js';
 export class MemoryStore extends Store {
   /** @type {Map<string, Map<string, import('./store.js').Row>>} */
   #tables = new Map();
+  /** @type {Map<string, number>} */
+  #series = new Map();
+
+  supportsTransactions = true;
+  // transaction: INHERITED — base pass-through is exactly right for single-threaded tests
 
   /** @param {string} table */
   #t(table) {
     let m = this.#tables.get(table);
     if (!m) { m = new Map(); this.#tables.set(table, m); }
     return m;
+  }
+
+  async nextSeries(prefix) {
+    const n = (this.#series.get(prefix) ?? 0) + 1;
+    this.#series.set(prefix, n);
+    return n;
   }
 
   async get(table, name) {

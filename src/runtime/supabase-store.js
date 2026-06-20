@@ -13,10 +13,22 @@ import { Store } from './store.js';
  * current`) called from here — wire `nextSeriesRpc()` once that migration lands.
  */
 export class SupabaseStore extends Store {
+  supportsTransactions = false;
+
   /** @param {import('@supabase/supabase-js').SupabaseClient} client */
   constructor(client) {
     super();
     this.sb = client;
+  }
+
+  async nextSeries(prefix) {
+    const { data, error } = await this.sb.rpc('next_series', { prefix });
+    if (error) throw new Error(`SupabaseStore.nextSeries ${prefix}: ${error.message}`);
+    return data == null ? null : Number(data);
+  }
+
+  async transaction(fn) {
+    throw new Error('SupabaseStore has no transactions — route atomic ops through PgStore');
   }
 
   /** Build from SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY. */

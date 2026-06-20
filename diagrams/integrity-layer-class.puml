@@ -1,0 +1,163 @@
+@startuml integrity-layer-class
+' Integrity Layer (Pass B) — REV 3 (after critique FAIL on R1: capability-predicate selector)
+' spartan-erp-engine. Design only. See docs/adr-integrity-layer.md.
+'
+' Two additions on the EXISTING Store contract, kept additive:
+'   1. nextSeries(prefix)  — atomic counter (Postgres next_series fn via rpc) [PASSED]
+'   2. transaction(fn) + supportsTransactions — request-op atomic unit (direct-PG via PgStore)
+' Atomic-op set (F2): submit, cancel, transition, syncDoctype-rows.
+' SupabaseStore.transaction THROWS (F4). MemoryStore inherits the pass-through (F5).
+' Selector is a CAPABILITY PREDICATE (R1): store.supportsTransactions ? store : pgStore().
+
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+hide empty members
+
+' ───────────────────────── persistence contract ─────────────────────────
+abstract class Store {
+  ' --- existing (unchanged) ---
+  +get(table, name) : Promise<Row|null>
+  +insert(table, row) : Promise<Row>
+  +update(table, name, row) : Promise<Row>
+  +list(table, opts) : Promise<Row[]>
+  +getChildren(table, parent, ptype, pfield) : Promise<Row[]>
+  +deleteChildren(table, parent, ptype, pfield) : Promise<void>
+  ' --- NEW capabilities ---
+  +nextSeries(prefix) : Promise<number|null>
+  +transaction(fn) : Promise<T>
+  +supportsTransactions : boolean = false   ' R1 — base default; subclasses override
+  --
+  note: base nextSeries() => null (caller falls back to read-inc-write)\nbase transaction(fn) => await fn(this)  [PASS-THROUGH; MemoryStore inherits]
+}
+
+class MemoryStore extends Store {
+  -#tables : Map
+  -#series : Map<string,number>
+  +nextSeries(prefix) : ++#series[prefix]
+  +supportsTransactions = true   ' R1 — selector leaves it UNTOUCHED (no pgStore(), no 500)
+  ' transaction: INHERITED pass-through (F5 — load-bearing; 224 tests stay green)
+}
+
+class SupabaseStore extends Store {
+  -sb : SupabaseClient   ' service_role over PostgREST — BYPASSES RLS (perms app-level)
+  +nextSeries(prefix) : sb.rpc('next_series',{prefix})   ' ATOMIC — no direct-PG
+  +transaction(fn) : THROWS (F4)   ' 'no transactions — route atomic ops through PgStore'
+  +supportsTransactions = false   ' R1 — selector UPGRADES to PgStore for atomic ops
+  --
+  note: THROW, not no-op — matches store.js 'fail loudly, never silently no-op a write'.\nUsed for GET get/list + non-atomic create/update only.
+}
+
+class PgStore extends Store {
+  -sql : postgres.Sql      ' transaction pooler :6543, prepare:false, max:1 (F8), lazy singleton
+  +get / insert / update / list / getChildren / deleteChildren   ' FULL parity reimpl (F7)
+  +nextSeries(prefix) : SELECT next_series($1)
+  +transaction(fn) : sql.begin(tx => fn(#bind(tx)))   ' REAL tx
+  +supportsTransactions = true   ' R1
+  -#bind(tx) : Store        ' tx-bound store — every method runs on tx connection
+  +{static} fromEnv() : loadPgStoreEnv(DATABASE_URL_POOLER)
+  --
+  note: F7 parity: INSERT/UPDATE ... RETURNING * (full stored row); get null-on-miss;\nlist eq+order.desc+range off..off+limit-1; QUOTE reserved cols\n(unique/read/write/create/submit/cancel/delete on tabDocPerm).\nF8: max:1 serializes warm concurrency on long txns (tunable).
+}
+
+' ───────────────────────── env validation (F6) ──────────────────────────
+class "env-schema" <<module>> {
+  +loadEnv() : EnvSchema           ' must NOT demand the PG var (validation.test.js:297)
+  +loadPgAdminEnv() : DATABASE_URL          ' session mode (PgAdmin)
+  +loadPgStoreEnv() : DATABASE_URL_POOLER   ' NEW 3rd lazy schema (transaction pooler)
+}
+
+' ───────────────────────── document runtime ─────────────────────────────
+class Document {
+  +doc : Row
+  +store : Store           ' inside a tx, this IS the tx-bound store (F1 propagation)
+  +insert() / +save()
+  ..hooks (override in controllers)..
+  +validate() / beforeSave()
+}
+
+class SubmittableDocument extends Document {
+  +submit() : save() + onSubmit()   ' atomic unit (wrapped by submitDoc)
+  +cancel() : save() + onCancel()   ' atomic unit (wrapped by cancelDoc) [F2]
+  +onSubmit() / +onCancel()
+  --
+  note: F1 INVARIANT (JSDoc contract): a hook creating another doc MUST use\n`newDoc(dt, data, this.store)` — NEVER a captured outer store, NEVER *.fromEnv().\nthis.store is the tx store; any other handle commits OUTSIDE the tx.
+}
+
+' ───────────────────────── naming ───────────────────────────────────────
+class naming <<module>> {
+  +resolveName(meta, doc, store)
+  +nextSeries(pattern, store)
+  --
+  note: prefers store.nextSeries(prefix) when present (atomic),\nelse read-inc-write on tab_series (MemoryStore path)
+}
+
+' ───────────────────────── workflow (F2 missed dependent) ────────────────
+class workflow <<module>> {
+  +transition(ctx, d, action, store)
+  --
+  note: 3-WRITE op: d.save() + onTransition(doc,ctx,store) + insert('tabWorkflowAction').\nF2: wrapped via transitionDoc -> store.transaction. F1: the `store` arg passed to\nonTransition IS the txStore — side-effect docs must use it (not fromEnv).
+}
+
+' ───────────────────────── service (tx boundary owner) ───────────────────
+class service <<module>> {
+  +getDoc / listDocs / createDoc / updateDoc   ' non-atomic -> injected store
+  +submitDoc     : store.transaction(load+submit on txStore)   ' F3 no split
+  +cancelDoc     : store.transaction(load+cancel on txStore)   ' F2
+  +transitionDoc : store.transaction(load+transition on txStore) ' F2
+}
+
+class handler <<module>> {
+  +handle({method,doctype,name,body,ctx}, store)
+  --
+  note: STORE SELECTOR — CAPABILITY PREDICATE (R1):\natomic ops (submit/cancel/action): txStore = store.supportsTransactions ? store : pgStore();\npgStore() (lazy singleton) resolved ONLY when injected store can't transact -> no 500 in tests.\nget/list/create/update -> injected store (unchanged).\nA transactional op runs load + ALL writes on the tx store (NO connection split).\nperm/state gate is the first line INSIDE transaction(fn) -> 403/409 fire before any PG resolve.
+}
+
+' ───────────────────────── installer (meta-row tx) ───────────────────────
+class Installer <<module>> {
+  +emitMigration(def)         ' DDL -> file (unchanged)
+  +syncDoctype(def, txStore)  ' meta rows inside store.transaction (one unit)
+  +bumpMetaVersion(store)     ' single write — OUTSIDE the tx, AFTER commit (F3.3)
+  +migrate(def, store, opts)  ' DDL (PgAdmin) -> tx(syncDoctype rows) -> bump
+  --
+  note: F3.3 consequence: bump failing AFTER row-commit = self-healing stale-cache-only\nwindow (rows live, old meta_version served until next bump); bounded by TTL.\nBumping BEFORE commit would be worse (cache points at rows that may roll back).
+}
+
+class PgAdmin <<module>> {
+  -_exec : (ddl)=>Promise
+  +applyDDL(ddl)   ' session pooler :5432, max:1 — DDL only, AUTO-COMMITS
+  +{static} fromEnv() : loadPgAdminEnv(DATABASE_URL)
+  --
+  note: DDL != data-tx. Separate idempotent step (IF NOT EXISTS / create-or-replace).
+}
+
+' ───────────────────────── Postgres objects ─────────────────────────────
+class "tab_series" <<table>> {
+  name : text PK
+  current : bigint
+}
+class "next_series(prefix)" <<pg function>> {
+  ' INSERT .. ON CONFLICT (name) DO UPDATE
+  '   SET current = tab_series.current + 1
+  ' RETURNING current;  -- single atomic statement
+}
+
+' ───────────────────────── relationships ────────────────────────────────
+Document --> Store : uses (this.store)
+SubmittableDocument ..> service : submit/cancel driven by
+workflow ..> service : transition driven by (transitionDoc)
+service --> Store : transaction(fn) for atomic ops
+handler --> service
+handler ..> PgStore : pgStore() ONLY when !store.supportsTransactions (R1)
+handler --> Store : injected store for get/list/create/update
+PgStore ..> "env-schema" : loadPgStoreEnv
+SupabaseStore ..> "env-schema" : loadEnv
+PgAdmin ..> "env-schema" : loadPgAdminEnv
+Installer --> Store : transaction(fn) for meta rows
+Installer --> PgAdmin : DDL (separate)
+naming --> Store : nextSeries(prefix)
+SupabaseStore ..> "next_series(prefix)" : rpc
+PgStore ..> "next_series(prefix)" : SELECT (in-tx)
+"next_series(prefix)" --> "tab_series" : UPSERT RETURNING
+PgAdmin ..> "next_series(prefix)" : migration applies (auto-DDL)
+
+@enduml

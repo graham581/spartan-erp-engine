@@ -22,7 +22,7 @@ import {
   ListQuerySchema,
 } from './request-schemas.js';
 import { assertValidDef, DocTypeDefSchema } from './def-schema.js';
-import { loadEnv, loadPgAdminEnv } from './env-schema.js';
+import { loadEnv, loadPgAdminEnv, loadPgStoreEnv } from './env-schema.js';
 
 // ---------------------------------------------------------------------------
 // zod-bridge
@@ -319,5 +319,29 @@ describe('env-schema — loadPgAdminEnv', () => {
   it('does NOT require SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY (B2)', () => {
     const env = { DATABASE_URL: 'postgres://user:pass@host/db' };
     expect(() => loadPgAdminEnv(env)).not.toThrow();
+  });
+});
+
+describe('env-schema — loadPgStoreEnv', () => {
+  it('throws plain Error matching /DATABASE_URL_POOLER/ when unset', () => {
+    let err;
+    try { loadPgStoreEnv({}); } catch (e) { err = e; }
+    expect(err).toBeDefined();
+    expect(err).not.toBeInstanceOf(ValidationError);
+    expect(err.message).toMatch(/DATABASE_URL_POOLER/);
+  });
+
+  it('returns DATABASE_URL_POOLER when set', () => {
+    const env = { DATABASE_URL_POOLER: 'postgres://user:pass@host:6543/db' };
+    const result = loadPgStoreEnv(env);
+    expect(result.DATABASE_URL_POOLER).toBe('postgres://user:pass@host:6543/db');
+  });
+});
+
+describe('env-schema — loadEnv does NOT require DATABASE_URL_POOLER (B2)', () => {
+  it('passes without DATABASE_URL_POOLER present', () => {
+    // Hermetic: loadEnv must not demand DATABASE_URL_POOLER
+    const env = { SUPABASE_URL: 'https://x.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'abc' };
+    expect(() => loadEnv(env)).not.toThrow();
   });
 });

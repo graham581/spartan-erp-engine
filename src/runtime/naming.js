@@ -40,6 +40,11 @@ export async function nextSeries(pattern, store) {
   const width = hashes ? hashes[0].length : 5;
   const prefix = pattern.replace(/\.?#+/, '');
   const key = prefix || 'NS';
+  if (typeof store.nextSeries === 'function') {
+    const n = await store.nextSeries(key);
+    if (n != null) return prefix + String(n).padStart(width, '0');
+  }
+  // fallback: read-inc-write (for stores without an atomic counter)
   const row = await store.get('tab_series', key);
   const next = (row ? Number(row.current) : 0) + 1;
   if (row) await store.update('tab_series', key, { name: key, current: next });
