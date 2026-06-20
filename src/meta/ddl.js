@@ -13,7 +13,9 @@
 //   Datetime                            → timestamptz
 //   Table                               → no column (child rows live in child's own table)
 
-const PG_TYPE_MAP = {
+// PG_TYPE_MAP is exported so def-schema.js can derive the fieldtype enum from the
+// single source of truth (M1 / R1 — do NOT duplicate this list in def-schema.js).
+export const PG_TYPE_MAP = {
   Data:     'text',
   Text:     'text',
   Code:     'text',

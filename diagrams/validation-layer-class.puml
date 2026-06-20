@@ -1,0 +1,154 @@
+@startuml validation-layer-class
+' Validation-boundary layer (Pass A, REV 2) for spartan-erp-engine.
+' SCOPE: Zod at the FIXED, code-known boundaries ONLY.
+'   - request envelopes (handler)        -> reject malformed input -> 400
+'   - the doctype def (the "meta-schema") -> structural-only, before installer writes
+'   - env (cold-start fail-fast)
+' depends_on / mandatory_depends_on is DEFERRED out of Pass A (see ADR rev 2 §3) and is
+' NOT drawn as active design here.
+' Conservative PlantUML: classes (modules-as-objects) + relationships only.
+
+title Validation Layer (Pass A, rev 2) - Zod boundaries ONLY
+
+' ---------------------------------------------------------------------------
+' Existing engine pieces this layer plugs into (shown for context, not re-designed)
+' ---------------------------------------------------------------------------
+package "api (existing)" {
+  class "handler.handle()" as Handler {
+    +handle({method,doctype,name,body,query,ctx}, store)
+    --
+    1st step already awaits ensure(doctype, store)
+    NEW: validate request ENVELOPE via RequestSchemas
+         after ensure(), before dispatch
+  }
+  class "service.js" as Service {
+    createDoc / updateDoc / listDocs
+    submitDoc / cancelDoc / transitionDoc
+  }
+}
+
+package "runtime (existing)" {
+  class "errors.ValidationError" as ValidationError {
+    EngineError subclass -> 400 (statusFor, handler.js:10)
+  }
+  class "validate.validateAgainstMeta()" as ValidateMeta {
+    reqd / Select / numeric / Check / unique
+    --
+    UNCHANGED in Pass A (depends_on deferred)
+  }
+}
+
+package "meta (existing)" {
+  class "installer.syncDoctype() / migrate()" as Installer {
+    upsert tabDocType/tabDocField/tabDocPerm
+    emitMigration (DDL -> file)
+    --
+    NEW: assertValidDef(def) as FIRST line (structural)
+  }
+  class "ddl.PG_TYPE_MAP" as DdlMap {
+    frozen fieldtype -> pg type map
+    --
+    SINGLE SOURCE of the fieldtype enum (M1)
+  }
+}
+
+package "infra (existing)" {
+  class "SupabaseStore.fromEnv()" as SbStore
+  class "PgAdmin.fromEnv()" as PgAdmin {
+    keeps its OWN /DATABASE_URL/ check (B2)
+  }
+}
+
+' ===========================================================================
+' NEW MODULES (Pass A, rev 2)  src/validation/
+' ===========================================================================
+package "validation (NEW)  src/validation/" {
+
+  ' --- (1a) request-envelope Zod schemas -------------------------------------
+  class "request-schemas.js" as RequestSchemas <<zod const>> {
+    +CreatePayloadSchema   record + refine(reject owner/docstatus/name) NO .strict()
+    +UpdatePatchSchema     same as Create (reserved-key refine, NO .strict())
+    +ActionBodySchema      object({action:string min1}).passthrough()
+    +ListQuerySchema       coerce limit/offset/order + f_* passthrough
+    --
+    envelope-only: per-field rules stay meta-driven (validate.js)
+  }
+
+  ' --- (1b) the meta-schema: structural "schema for the meta" ----------------
+  class "def-schema.js" as DefSchema <<zod const>> {
+    +DocTypeDefSchema
+    +DocFieldDefSchema   fieldtype enum, Link|Table => options STRING present
+    +DocPermDefSchema    .passthrough() (tolerate stray doctype key, M2)
+    +assertValidDef(def)
+    --
+    STRUCTURAL ONLY (B1): no cross-doctype existence check
+    (that is loader.load N1, loader.js:112)
+    enum = Object.keys(PG_TYPE_MAP).concat('Table')  (M1, no drift)
+  }
+
+  ' --- (1c) env schemas (TWO, separate) --------------------------------------
+  class "env-schema.js" as EnvSchema <<zod const>> {
+    +EnvSchema          SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
+    +loadEnv(env)       -> {url, key}   (Supabase keys ONLY)
+    +PgAdminEnvSchema   DATABASE_URL
+    +loadPgAdminEnv(env) -> {databaseUrl}
+    --
+    throw PLAIN Error (NOT ValidationError) - operator/cold-start,
+    never a client 400. Lazy (inside fromEnv), not import-time.
+  }
+
+  ' --- (1d) the single Zod->ValidationError bridge ---------------------------
+  class "zod-bridge.js" as ZodBridge <<pure fn>> {
+    +parseOrThrow(schema, value, label) : T
+    catch !success -> throw ValidationError(label + flatten(msg))
+    ONE place maps Zod -> ValidationError (DRY)
+  }
+}
+
+' ===========================================================================
+' Relationships
+' ===========================================================================
+
+' (1a) handler validates the request envelope before dispatch
+Handler ..> RequestSchemas       : <<select by method/name/action>>
+Handler ..> ZodBridge            : parseOrThrow(envelope, body|query)
+Handler --> Service              : dispatch (after envelope OK)
+
+' (1b) installer validates a doctype DEF (structural) before writing meta rows / DDL
+Installer ..> DefSchema          : assertValidDef(def) [first line]
+DefSchema ..> ZodBridge          : parseOrThrow(DocTypeDefSchema, def)
+DefSchema ..> DdlMap             : enum = keys(PG_TYPE_MAP)+Table (M1)
+
+' (1c) env validated lazily at cold start; the TWO loaders are distinct (B2)
+SbStore  ..> EnvSchema           : loadEnv()        (Supabase keys)
+PgAdmin  ..> EnvSchema           : loadPgAdminEnv() (DATABASE_URL only)
+
+' all REQUEST/DEF Zod failures funnel through the one bridge to the one error type
+ZodBridge ..> ValidationError    : throws  (-> 400)
+
+note bottom of EnvSchema
+  B2: PgAdmin does NOT route through loadEnv
+  (which demands the two Supabase keys it
+  doesn't need). It keeps its own DATABASE_URL
+  check; thrown msg matches /DATABASE_URL/ so
+  pg-admin.test.js stays green. Env failures
+  are plain Error, not 400.
+end note
+
+note bottom of RequestSchemas
+  B4: reserved-key reject is a REFINEMENT
+  (owner|docstatus|name only), NOT .strict()
+  (.strict would 400 every business field).
+  Action + DocPerm schemas are .passthrough().
+end note
+
+note bottom of ValidateMeta
+  depends_on / mandatory_depends_on DEFERRED
+  out of Pass A (ADR rev 2 ss3). The whole
+  chain (migration + boot-meta cols + installer
+  write + loader read + validator) ships
+  together in its own mini-pass. validate.js
+  is UNCHANGED here.
+end note
+
+@enduml

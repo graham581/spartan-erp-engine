@@ -1,6 +1,8 @@
 import { createDoc, getDoc, listDocs, updateDoc, submitDoc, cancelDoc, transitionDoc } from './service.js';
 import { ensure } from '../meta/loader.js';
 import { ValidationError, NotFoundError, PermissionError, StateError } from '../runtime/errors.js';
+import { parseOrThrow } from '../validation/zod-bridge.js';
+import { CreatePayloadSchema, UpdatePatchSchema, ActionBodySchema, ListQuerySchema } from '../validation/request-schemas.js';
 
 /** Map an EngineError subclass to an HTTP status. */
 function statusFor(err) {
@@ -28,8 +30,23 @@ function statusFor(err) {
 export async function handle({ method, doctype, name, body = {}, query = {}, ctx }, store) {
   try {
     await ensure(doctype, store); // C1: prime meta + transitive Link/Table closure before the sync pipeline
+
+    // Validate the request envelope after ensure() and before dispatch.
+    // Schema selected by (method, name, body.action) — ADR §1a.
     const m = (method || 'GET').toUpperCase();
     const action = body && body.action;
+
+    if (m === 'POST' && !name) {
+      parseOrThrow(CreatePayloadSchema, body, 'body');
+    } else if (m === 'POST' && name && action) {
+      parseOrThrow(ActionBodySchema, body, 'body');
+    } else if (m === 'POST' && name) {
+      parseOrThrow(UpdatePatchSchema, body, 'body');
+    } else if (m === 'GET' && !name) {
+      parseOrThrow(ListQuerySchema, query, 'query');
+    }
+    // GET /<doctype>/<name> — no body/query schema
+
     let data;
 
     if (!name) {

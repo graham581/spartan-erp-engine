@@ -18,6 +18,7 @@
 
 import { createTableSql, alterColumnsSql } from './ddl.js';
 import { registerBootMeta }               from './boot-meta.js';
+import { assertValidDef }                 from '../validation/def-schema.js';
 import { newDoc }                          from '../runtime/document.js';
 import { writeFileSync, mkdirSync }        from 'node:fs';
 import { join, resolve, dirname }          from 'node:path';
@@ -96,6 +97,9 @@ export function emitMigration(def, opts = {}) {
  * @returns {Promise<void>}
  */
 export async function syncDoctype(def, store) {
+  // Structural validation first — fail loudly before any write (ADR §1b / Fail-Fast).
+  assertValidDef(def);
+
   // Ensure the 6 meta-doctypes are pinned so getMeta('DocType') resolves synchronously.
   registerBootMeta();
 
