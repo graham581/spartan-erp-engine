@@ -73,3 +73,38 @@ export function loadPgStoreEnv(env = process.env) {
   }
   return r.data;
 }
+
+// AuthEnvSchema — Google OAuth client IDs + devAuth flag.
+//   GOOGLE_OAUTH_CLIENT_IDS: comma-separated list of >=1 OAuth client ID strings.
+//   DEV_AUTH_COERCED: pre-normalised to 'true'|'1'|undefined (N6 fail-closed).
+const AuthEnvSchema = z.object({
+  GOOGLE_OAUTH_CLIENT_IDS: z.string().min(1).transform(v => v.split(',').map(s => s.trim()).filter(Boolean)),
+  DEV_AUTH_COERCED:        z.enum(['true', '1']).optional(),
+});
+
+/**
+ * Validate and return Google auth env vars.
+ * Throws a plain Error matching /GOOGLE_OAUTH_CLIENT_IDS/ on missing/empty client IDs.
+ * DEV_AUTH is fail-closed: only 'true'/'1' enable it; anything else (unset, 'false', '0', '') -> false (N6).
+ * LAZY: never called at import time.
+ *
+ * @param {Record<string, string|undefined>} [env]  defaults to process.env
+ * @returns {{ GOOGLE_OAUTH_CLIENT_IDS: string[], devAuth: boolean }}
+ */
+export function loadAuthEnv(env = process.env) {
+  // N6 fail-closed: normalise DEV_AUTH so only 'true'/'1' reach the enum validator;
+  // 'false', '0', '', and anything else are treated as absent (undefined).
+  const devAuthRaw = env.DEV_AUTH;
+  const coerced = {
+    GOOGLE_OAUTH_CLIENT_IDS: env.GOOGLE_OAUTH_CLIENT_IDS,
+    DEV_AUTH_COERCED: (devAuthRaw === 'true' || devAuthRaw === '1') ? devAuthRaw : undefined,
+  };
+  const r = AuthEnvSchema.safeParse(coerced);
+  if (!r.success) {
+    throw new Error('Auth: set GOOGLE_OAUTH_CLIENT_IDS (comma-separated Google OAuth client ID strings)');
+  }
+  return {
+    GOOGLE_OAUTH_CLIENT_IDS: r.data.GOOGLE_OAUTH_CLIENT_IDS,
+    devAuth: r.data.DEV_AUTH_COERCED !== undefined,
+  };
+}

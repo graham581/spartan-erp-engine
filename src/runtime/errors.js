@@ -20,3 +20,6 @@ export class PermissionError extends EngineError {}
 
 /** Illegal lifecycle/workflow transition (e.g. submitting a submitted doc). -> 409 */
 export class StateError extends EngineError {}
+
+/** Authentication failed (missing/invalid/expired token, unverified email, unknown user). -> 401 */
+export class AuthError extends EngineError {}

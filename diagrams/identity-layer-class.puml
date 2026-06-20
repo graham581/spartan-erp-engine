@@ -1,0 +1,226 @@
+@startuml identity-layer-class
+' Pass C — IDENTITY LAYER for spartan-erp-engine  (REV 2 — post critique FAIL on if_owner half)
+' Real Google-idToken auth + email->User->ctx resolution + Frappe-faithful if_owner enforcement.
+' Design only. Conservative PlantUML (CLAUDE.md §3).
+'
+' REV 2 fixes: F1 (owner capability read=true/mutate=false), F2 (service.js doc-level check
+' is now wired, not deferred), F3 (breach closed), F4 (create excluded from if_owner),
+' F5 (ownerOnly REMOVED; 4 seeds migrated to if_owner). N1-N7 folded.
+'
+' Change kinds: <<new>> <<modified>> <<meta>> <<unchanged>>
+
+title Identity Layer (Pass C, REV 2): Google idToken -> User -> Ctx -> if_owner
+
+' ===========================================================================
+' 1) TOKEN VERIFICATION  (new module: src/perms/auth.js)  -- PASSED critique
+' ===========================================================================
+package "src/perms/auth.js  <<new>>" {
+  class GoogleAuth <<new>> {
+    +verifyGoogleIdToken(token: string) : Promise<GooglePayload>
+    --
+    - jwks = createRemoteJWKSet(GOOGLE_CERTS_URL)   ' jose; caches internally
+    - issuer = ["https://accounts.google.com","accounts.google.com"]
+    - audience = loadAuthEnv().GOOGLE_OAUTH_CLIENT_IDS  ' string[] (any-of)
+    - clockTolerance = "5s"                          ' N3
+    --
+    note right
+      jwtVerify(token, jwks, { issuer, audience, clockTolerance }).
+      email_verified !== true -> AuthError.
+      FAIL-CLOSED (N4): any JWKS/verify throw -> AuthError (401),
+      never a bare 500.
+    end note
+  }
+  class GooglePayload <<new>> {
+    +email : string
+    +email_verified : boolean
+    +sub : string
+    +aud : string
+    +iss : string
+  }
+}
+
+' ===========================================================================
+' 2) AUTH ENV  (new lazy schema in src/validation/env-schema.js)
+' ===========================================================================
+class "env-schema.js" as EnvSchema <<modified>> {
+  +loadEnv() / loadPgAdminEnv() / loadPgStoreEnv()   ' existing
+  +loadAuthEnv() <<new>> : { GOOGLE_OAUTH_CLIENT_IDS:string[], devAuth:boolean }
+  --
+  note bottom
+    Lazy (called inside verify/resolve, never at import).
+    N6 fail-closed: DEV_AUTH coerced via enum(['true','1']);
+    unset/empty/"false"/"0" => devAuth=false (no header trust).
+  end note
+}
+
+' ===========================================================================
+' 3) USER MODEL  (meta-as-data — Frappe-faithful; no new code table)  -- PASSED
+' ===========================================================================
+package "User identity (meta-as-data)" {
+  class "User <<meta>>" as UserDoc {
+    +name : string      ' = email (autoname field:email)
+    +email : string
+    +full_name : string
+    +branch : string    ' -> ctx.scopes.branch
+    +enabled : Check
+    +roles : Table -> "Has Role"
+  }
+  class "Has Role <<meta>>" as HasRole {
+    +parent : Link -> User
+    +role : Link -> Role
+  }
+  UserDoc "1" *-- "many" HasRole : roles (child table)
+  HasRole "many" --> "1" Role : role
+  class "Role <<unchanged>>" as Role { +role_name : string }
+  note bottom of UserDoc
+    Stored as ordinary docs in tabUser/tabHasRole; loaded by the SAME
+    MetaLoader.ensure() path. No bespoke users table. (ADR §2)
+    Migration seeds User/Has Role meta + admin BEFORE first auth req (N5).
+  end note
+}
+
+' ===========================================================================
+' 4) IDENTITY RESOLVER  (new module: src/perms/identity.js)
+' ===========================================================================
+class "src/perms/identity.js  <<new>>" as Identity <<new>> {
+  +resolveUserToCtx(email: string, store) : Promise<Ctx>
+  --
+  - RAW store.get('tabUser', email)   ' N5: never via getDoc (no auth recursion)
+  - reject if missing OR enabled===false -> AuthError
+  - roles  = Has Role child rows -> [role_name...]
+  - branch = User.branch ; scopes = branch ? {branch} : {}
+  - unrestricted = applyScopePolicy(roles)   ' role->scope policy LIVES HERE; admin->unrestricted
+  --
+  note right
+    ownerOnly is NOT set (removed entirely — F5/N7).
+    Owner-scope now DERIVES from if_owner docperms in permissions.js.
+  end note
+}
+Identity ..> UserDoc : reads via RAW store.get
+Identity ..> Context : makeContext(...)
+
+' ===========================================================================
+' 5) CONTEXT  (ownerOnly REMOVED — F5/N7)
+' ===========================================================================
+class "src/perms/context.js" as Context <<modified>> {
+  +makeContext({user,roles,scopes,unrestricted}) : Ctx
+  +SYSTEM : Ctx
+  +GUEST  : Ctx
+  --
+  note bottom
+    F5/N7: ownerOnly DELETED from makeContext/SYSTEM/GUEST/typedef.
+    A field nothing writes is a latent trap; removed, not "deprecated".
+  end note
+}
+
+' ===========================================================================
+' 6) REQUEST ENTRY  (replace the dev shim)  -- PASSED critique
+' ===========================================================================
+class "src/api/context-from-request.js" as CtxFromReq <<modified>> {
+  +ctxFromRequest(req, store) : Promise<Ctx>   ' now ASYNC
+  --
+  - bearer = parse 'Authorization: Bearer <jwt>'
+  - no bearer: if devAuth -> devCtxFromHeaders(req) else GUEST
+  - payload = await verifyGoogleIdToken(bearer)  ' email_verified gate inside
+  - return await resolveUserToCtx(payload.email, store)
+  - devCtxFromHeaders(req)  ' OLD x-spartan-* shim, gated behind DEV_AUTH only
+}
+CtxFromReq ..> GoogleAuth : verifyGoogleIdToken
+CtxFromReq ..> Identity : resolveUserToCtx
+CtxFromReq ..> Context : GUEST / devCtxFromHeaders
+
+' ===========================================================================
+' 7) ROUTES  (await the async ctx)  -- PASSED critique
+' ===========================================================================
+class "api/[doctype]/[name].js\napi/[doctype]/index.js" as Routes <<modified>> {
+  +handler(req,res)
+  --
+  - ctx = await ctxFromRequest(req, store())   ' was sync
+  - map AuthError -> 401
+}
+Routes ..> CtxFromReq
+Routes ..> Handler : handle({...ctx}, store)
+
+class "src/api/handler.js" as Handler <<unchanged>> {
+  +handle({method,doctype,name,body,query,ctx}, store)
+  note bottom
+    statusFor() gains AuthError -> 401. Otherwise unchanged.
+  end note
+}
+
+' ===========================================================================
+' 8) if_owner ENFORCEMENT  (permissions.js + service.js)  -- REV 2 CORE
+' ===========================================================================
+class "src/perms/permissions.js" as Perms <<modified>> {
+  +can(ctx, doctype, op, doc?) : boolean
+  +assertCan(ctx, doctype, op, doc?)
+  +assertCanMutate(ctx, doctype, op)   ' NEW cheap pre-load probe (any grant)
+  +queryConditions(ctx, doctype) : filter
+  +visibleFields / maskRead / assertCanWrite     ' unchanged
+  --
+  - hasPlainGrant(ctx,dt,op)   ' permlevel-0, ifOwner!==true  (N2)
+  - hasOwnerGrant(ctx,dt,op)   ' permlevel-0, ifOwner===true, op!=='create'  (N2,F4)
+  --
+  note right
+    can() formula (Frappe permissions.py L300-345):
+      if hasPlainGrant            -> true        (R-C: plain wins/union, N1)
+      if !hasOwnerGrant           -> false       (deny-by-default; create excluded F4)
+      if doc !== undefined        -> doc.owner === ctx.user   (F2 doc-level)
+      return op === 'read'                         (F1/R-A: no-doc true ONLY for read;
+                                                    mutating no-doc -> false)
+    queryConditions (db_query.requires_owner_constraint L1472-1487):
+      add {owner:ctx.user} iff hasOwnerGrant('read') && !hasPlainGrant('read')
+      (read-gated; replaces removed `if(ctx.ownerOnly)`)
+  end note
+}
+Perms ..> Context : reads ctx.roles / ctx.user / ctx.unrestricted
+Perms ..> Meta : getDocPerms() (now reads p.ifOwner)
+
+class "src/api/service.js" as Service <<modified>> {
+  +createDoc / getDoc / listDocs        ' create: plain (F4); get: read+row-filter
+  +updateDoc / submitDoc / cancelDoc / transitionDoc
+  --
+  note right
+    F2 (was deferred — now an explicit work order):
+    each MUTATING single-doc op:
+      assertCanMutate(ctx,dt,op)        ' cheap pre-load 403 (no PG work)
+      d = await loadInScope(...)
+      assertCan(ctx,dt,op, d.doc)       ' AUTHORITATIVE owner check (F2/F3)
+    F3 closed: plain-read + owner-only-write rep editing a co-worker's
+    doc now 403s at the post-load assertCan, not waved through.
+  end note
+}
+Service ..> Perms : assertCanMutate / assertCan(...,doc) / queryConditions / maskRead
+Handler ..> Service : create/get/list/update/submit/cancel/transition
+
+class "src/meta/registry.js / loader.js" as Meta <<unchanged>> {
+  DocPerm.ifOwner  ' ALREADY loaded (loader.js:105) — newly CONSUMED only
+}
+
+' ===========================================================================
+' 9) ERRORS
+' ===========================================================================
+class "src/runtime/errors.js" as Errors <<modified>> {
+  +AuthError <<new>>  ' -> HTTP 401 in statusFor()
+  +PermissionError    ' existing -> 403
+}
+GoogleAuth ..> Errors
+Identity ..> Errors
+CtxFromReq ..> Errors
+
+' ===========================================================================
+' 10) TEST CHURN (F5 — owned)
+' ===========================================================================
+note as TestNote
+  F5/N7 migrate (intended churn, NOT "unaffected"):
+   perms.test.js:37 / service.test.js:34(56-69,71-73) /
+   handler.test.js:24 / workflow.test.js:97
+  rep seed: {read,write,create} -> {read,ifOwner}+{write,ifOwner}+{create};
+  rep ctx drops ownerOnly:true. Assertions UNCHANGED (own+branch).
+  + NEW tests: N1 (plain wins union), F1 (owner-only write no-doc=false),
+    F3 (cross-owner update -> 403), N6 (DEV_AUTH="false" dead).
+end note
+TestNote .. Perms
+TestNote .. Service
+
+@enduml

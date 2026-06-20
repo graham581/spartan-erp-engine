@@ -23,7 +23,9 @@ function seed() {
       { role: 'admin', doctype: 'Job', permlevel: 1, read: true, write: true },
       { role: 'manager', doctype: 'Job', permlevel: 0, read: true, write: true, create: true, submit: true, cancel: true },
       { role: 'manager', doctype: 'Job', permlevel: 1, read: true },
-      { role: 'rep', doctype: 'Job', permlevel: 0, read: true, write: true, create: true },
+      { role: 'rep', doctype: 'Job', permlevel: 0, read: true, ifOwner: true },
+      { role: 'rep', doctype: 'Job', permlevel: 0, write: true, ifOwner: true },
+      { role: 'rep', doctype: 'Job', permlevel: 0, create: true },
       { role: 'viewer', doctype: 'Job', permlevel: 0, read: true },
     ],
   });
@@ -31,7 +33,7 @@ function seed() {
 
 const admin = makeContext({ user: 'admin@x', roles: ['admin'], unrestricted: true });
 const manager = makeContext({ user: 'mgr@x', roles: ['manager'], scopes: { branch: 'VIC' } });
-const rep = makeContext({ user: 'rep@x', roles: ['rep'], scopes: { branch: 'VIC' }, ownerOnly: true });
+const rep = makeContext({ user: 'rep@x', roles: ['rep'], scopes: { branch: 'VIC' } });
 const viewer = makeContext({ user: 'v@x', roles: ['viewer'], scopes: { branch: 'VIC' } });
 
 describe('service — adversarial matrix through the real code path', () => {
@@ -97,5 +99,51 @@ describe('service — adversarial matrix through the real code path', () => {
     // manager (branch VIC) can submit the same VIC doc
     const done = await submitDoc(manager, 'Job', j.name, store);
     expect(done.docstatus).toBe(1);
+  });
+});
+
+describe('service — F3: post-load assertCan catches cross-owner update (plain-read + owner-only-write)', () => {
+  // "broadrep" has plain read (no {owner} filter from row-scope) but owner-only write.
+  // Row-scope passes (sees the co-worker's doc), but the post-load assertCan(write, doc) must 403.
+  function seedBroadRep() {
+    registerDoctype({
+      doctype: 'Job',
+      table: 'tabJob',
+      submittable: false,
+      autoname: 'JOB-.#####',
+      scopeFields: ['branch'],
+      fields: [
+        { fieldname: 'title', fieldtype: 'Data', reqd: true, permlevel: 0 },
+        { fieldname: 'branch', fieldtype: 'Data', permlevel: 0 },
+      ],
+      childTables: [],
+      permissions: [
+        { role: 'admin', doctype: 'Job', permlevel: 0, read: true, write: true, create: true },
+        // broadrep: plain read (doc NOT filtered out by owner), owner-only write (post-load gate)
+        { role: 'broadrep', doctype: 'Job', permlevel: 0, read: true },
+        { role: 'broadrep', doctype: 'Job', permlevel: 0, write: true, ifOwner: true },
+        { role: 'broadrep', doctype: 'Job', permlevel: 0, create: true },
+      ],
+    });
+  }
+
+  /** @type {MemoryStore} */
+  let store;
+  beforeEach(() => { _resetRegistry(); seedBroadRep(); store = new MemoryStore(); });
+
+  it('F3 breach: broadrep updating a co-worker in-branch doc → PermissionError (post-load check)', async () => {
+    const broadAdm = makeContext({ user: 'admin@x', roles: ['admin'], unrestricted: true });
+    const alice = makeContext({ user: 'alice@x', roles: ['broadrep'], scopes: { branch: 'VIC' } });
+    const bob   = makeContext({ user: 'bob@x',   roles: ['broadrep'], scopes: { branch: 'VIC' } });
+
+    // alice creates a doc she owns
+    const j = await createDoc(alice, 'Job', { title: 'Alice job', branch: 'VIC' }, store);
+
+    // bob has plain read (doc not filtered) but owner-only write → post-load assertCan must reject
+    await expect(updateDoc(bob, 'Job', j.name, { title: 'Hacked' }, store)).rejects.toBeInstanceOf(PermissionError);
+
+    // alice updating her own doc → succeeds
+    const ok = await updateDoc(alice, 'Job', j.name, { title: 'Fixed' }, store);
+    expect(ok.title).toBe('Fixed');
   });
 });

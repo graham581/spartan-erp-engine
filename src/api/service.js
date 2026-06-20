@@ -1,6 +1,6 @@
 import { getMeta } from '../meta/registry.js';
 import { newDoc, loadDoc } from '../runtime/document.js';
-import { assertCan, assertCanWrite, maskRead, queryConditions } from '../perms/permissions.js';
+import { assertCan, assertCanMutate, assertCanWrite, maskRead, queryConditions } from '../perms/permissions.js';
 import { transition } from '../workflow/workflow.js';
 import { NotFoundError, StateError } from '../runtime/errors.js';
 
@@ -56,8 +56,9 @@ export async function listDocs(ctx, doctype, opts = {}, store) {
 
 /** @param {import('../perms/context.js').Ctx} ctx */
 export async function updateDoc(ctx, doctype, name, patch, store) {
-  assertCan(ctx, doctype, 'write');
+  assertCanMutate(ctx, doctype, 'write');
   const d = await loadInScope(ctx, doctype, name, store);
+  assertCan(ctx, doctype, 'write', d.doc);                // AUTHORITATIVE owner check (F2/F3)
   const before = { ...d.doc };
   Object.assign(d.doc, patch);
   assertCanWrite(ctx, doctype, before, d.doc);
@@ -68,8 +69,9 @@ export async function updateDoc(ctx, doctype, name, patch, store) {
 /** @param {import('../perms/context.js').Ctx} ctx */
 export async function submitDoc(ctx, doctype, name, store) {
   return store.transaction(async (txStore) => {
-    assertCan(ctx, doctype, 'submit');                          // FIRST — 403 before any PG work
+    assertCanMutate(ctx, doctype, 'submit');                    // FIRST — cheap pre-load 403 before any PG work
     const d = await loadInScope(ctx, doctype, name, txStore);   // load on tx (read-your-writes; d.store===txStore)
+    assertCan(ctx, doctype, 'submit', d.doc);                   // AUTHORITATIVE owner check (F2/F3)
     if (typeof d.submit !== 'function') throw new StateError(`${doctype} is not submittable`);
     await d.submit();                                           // save + onSubmit all on the tx
     return maskRead(ctx, doctype, d.doc);
@@ -79,8 +81,9 @@ export async function submitDoc(ctx, doctype, name, store) {
 /** @param {import('../perms/context.js').Ctx} ctx */
 export async function cancelDoc(ctx, doctype, name, store) {
   return store.transaction(async (txStore) => {
-    assertCan(ctx, doctype, 'cancel');                          // FIRST — 403 before any PG work
+    assertCanMutate(ctx, doctype, 'cancel');                    // FIRST — cheap pre-load 403 before any PG work
     const d = await loadInScope(ctx, doctype, name, txStore);   // load on tx (read-your-writes; d.store===txStore)
+    assertCan(ctx, doctype, 'cancel', d.doc);                   // AUTHORITATIVE owner check (F2/F3)
     if (typeof d.cancel !== 'function') throw new StateError(`${doctype} is not submittable`);
     await d.cancel();                                           // save + onCancel all on the tx
     return maskRead(ctx, doctype, d.doc);
@@ -94,8 +97,9 @@ export async function cancelDoc(ctx, doctype, name, store) {
  */
 export async function transitionDoc(ctx, doctype, name, action, store) {
   return store.transaction(async (txStore) => {
-    assertCan(ctx, doctype, 'write');                           // FIRST — 403 before any PG work; illegal action -> StateError -> 409
+    assertCanMutate(ctx, doctype, 'write');                     // FIRST — cheap pre-load 403 before any PG work; illegal action -> StateError -> 409
     const d = await loadInScope(ctx, doctype, name, txStore);   // load on tx (read-your-writes; d.store===txStore)
+    assertCan(ctx, doctype, 'write', d.doc);                    // AUTHORITATIVE owner check (F2/F3)
     await transition(ctx, d, action, txStore);                  // save + onTransition + tabWorkflowAction all on the tx
     return maskRead(ctx, doctype, d.doc);
   });

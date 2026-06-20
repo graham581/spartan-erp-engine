@@ -1,6 +1,6 @@
 import { createDoc, getDoc, listDocs, updateDoc, submitDoc, cancelDoc, transitionDoc } from './service.js';
 import { ensure } from '../meta/loader.js';
-import { ValidationError, NotFoundError, PermissionError, StateError } from '../runtime/errors.js';
+import { ValidationError, NotFoundError, PermissionError, StateError, AuthError } from '../runtime/errors.js';
 import { parseOrThrow } from '../validation/zod-bridge.js';
 import { CreatePayloadSchema, UpdatePatchSchema, ActionBodySchema, ListQuerySchema } from '../validation/request-schemas.js';
 import { PgStore } from '../runtime/pg-store.js';
@@ -12,6 +12,7 @@ function pgStore() { return (_pg ??= PgStore.fromEnv()); }
 
 /** Map an EngineError subclass to an HTTP status. */
 function statusFor(err) {
+  if (err instanceof AuthError) return 401;
   if (err instanceof PermissionError) return 403;
   if (err instanceof NotFoundError) return 404;
   if (err instanceof StateError) return 409;

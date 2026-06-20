@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.47.10",
+    "jose": "^6.2.3",
     "postgres": "^3.4.9",
     "zod": "^4.4.3"
   }

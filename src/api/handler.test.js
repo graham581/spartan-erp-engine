@@ -1,9 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { MemoryStore } from '../runtime/memory-store.js';
 import { registerDoctype, _resetRegistry } from '../meta/registry.js';
 import { registerBootMeta } from '../meta/boot-meta.js';
-import { makeContext } from '../perms/context.js';
+import { makeContext, GUEST } from '../perms/context.js';
 import { handle } from './handler.js';
+import { ctxFromRequest } from './context-from-request.js';
+import { AuthError } from '../runtime/errors.js';
 
 function seed() {
   registerDoctype({
@@ -15,13 +17,15 @@ function seed() {
     ],
     childTables: [],
     permissions: [
-      { role: 'rep', doctype: 'Job', permlevel: 0, read: true, write: true, create: true },
+      { role: 'rep', doctype: 'Job', permlevel: 0, read: true, ifOwner: true },
+      { role: 'rep', doctype: 'Job', permlevel: 0, write: true, ifOwner: true },
+      { role: 'rep', doctype: 'Job', permlevel: 0, create: true },
       { role: 'viewer', doctype: 'Job', permlevel: 0, read: true },
     ],
   });
 }
 
-const rep = makeContext({ user: 'rep@x', roles: ['rep'], scopes: { branch: 'VIC' }, ownerOnly: true });
+const rep = makeContext({ user: 'rep@x', roles: ['rep'], scopes: { branch: 'VIC' } });
 const viewer = makeContext({ user: 'v@x', roles: ['viewer'], scopes: { branch: 'VIC' } });
 
 describe('handler — method/action dispatch + error→status', () => {
@@ -80,5 +84,56 @@ describe('handler — method/action dispatch + error→status', () => {
   it('DELETE method -> 405', async () => {
     const r = await handle({ method: 'DELETE', doctype: 'Job', name: 'X', ctx: rep }, store);
     expect(r.status).toBe(405);
+  });
+});
+
+describe('handler — N6 dead-shim: devAuth=false + x-spartan-* headers → GUEST', () => {
+  it('N6: no bearer, devAuth disabled (default) → ctxFromRequest returns GUEST', async () => {
+    // ctxFromRequest calls loadAuthEnv() to check devAuth; mock it to return devAuth:false
+    // (simulates the prod default where DEV_AUTH is not set).
+    const envMod = await import('../validation/env-schema.js');
+    const envSpy = vi.spyOn(envMod, 'loadAuthEnv').mockReturnValue({
+      GOOGLE_OAUTH_CLIENT_IDS: [],
+      devAuth: false,
+    });
+    const stubStore = new MemoryStore();
+    const stubReq = {
+      headers: {
+        'x-spartan-user': 'rep@x',
+        'x-spartan-roles': 'rep',
+        'x-spartan-branch': 'VIC',
+        // no 'authorization' header
+      },
+    };
+    // When devAuth is off, the x-spartan-* shim is dead: ctxFromRequest must return GUEST.
+    const ctx = await ctxFromRequest(stubReq, stubStore);
+    expect(ctx).toEqual(GUEST);
+    envSpy.mockRestore();
+  });
+});
+
+describe('handler — statusFor: AuthError → 401', () => {
+  // Verify the AuthError → 401 mapping by having handle() catch an AuthError thrown from
+  // a mocked service. The service is mocked to throw so we can reach the catch branch
+  // without needing a real bearer token round-trip.
+  it('statusFor(new AuthError) → 401 via handle() catch branch', async () => {
+    const store = new MemoryStore();
+    // Stub a minimal registered doctype so ensure() succeeds.
+    _resetRegistry();
+    registerBootMeta();
+    registerDoctype({
+      doctype: 'Job', table: 'tabJob', scopeFields: [],
+      fields: [{ fieldname: 'title', fieldtype: 'Data', permlevel: 0 }],
+      childTables: [],
+      permissions: [{ role: 'rep', doctype: 'Job', permlevel: 0, read: true }],
+    });
+    // Mock listDocs (the GET collection path) to throw an AuthError.
+    const svcMod = await import('./service.js');
+    const spy = vi.spyOn(svcMod, 'listDocs').mockRejectedValueOnce(new AuthError('session expired'));
+    const ctx = makeContext({ user: 'rep@x', roles: ['rep'] });
+    const r = await handle({ method: 'GET', doctype: 'Job', name: null, ctx }, store);
+    expect(r.status).toBe(401);
+    expect(r.body.type).toBe('AuthError');
+    spy.mockRestore();
   });
 });

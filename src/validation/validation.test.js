@@ -22,7 +22,7 @@ import {
   ListQuerySchema,
 } from './request-schemas.js';
 import { assertValidDef, DocTypeDefSchema } from './def-schema.js';
-import { loadEnv, loadPgAdminEnv, loadPgStoreEnv } from './env-schema.js';
+import { loadEnv, loadPgAdminEnv, loadPgStoreEnv, loadAuthEnv } from './env-schema.js';
 
 // ---------------------------------------------------------------------------
 // zod-bridge
@@ -343,5 +343,72 @@ describe('env-schema — loadEnv does NOT require DATABASE_URL_POOLER (B2)', () 
     // Hermetic: loadEnv must not demand DATABASE_URL_POOLER
     const env = { SUPABASE_URL: 'https://x.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'abc' };
     expect(() => loadEnv(env)).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// env-schema — loadAuthEnv
+// ---------------------------------------------------------------------------
+
+describe('env-schema — loadAuthEnv', () => {
+  it('splits comma-separated client IDs and defaults devAuth to false', () => {
+    const result = loadAuthEnv({ GOOGLE_OAUTH_CLIENT_IDS: 'a,b' });
+    expect(result).toEqual({ GOOGLE_OAUTH_CLIENT_IDS: ['a', 'b'], devAuth: false });
+  });
+
+  it('throws plain Error matching /GOOGLE_OAUTH_CLIENT_IDS/ when key is missing', () => {
+    let err;
+    try { loadAuthEnv({}); } catch (e) { err = e; }
+    expect(err).toBeDefined();
+    expect(err).not.toBeInstanceOf(ValidationError);
+    expect(err.message).toMatch(/GOOGLE_OAUTH_CLIENT_IDS/);
+  });
+
+  // N6 fail-closed: only 'true'/'1' enable devAuth
+  it('N6: DEV_AUTH "true" -> devAuth === true', () => {
+    const result = loadAuthEnv({ GOOGLE_OAUTH_CLIENT_IDS: 'x', DEV_AUTH: 'true' });
+    expect(result.devAuth).toBe(true);
+  });
+
+  it('N6: DEV_AUTH "1" -> devAuth === true', () => {
+    const result = loadAuthEnv({ GOOGLE_OAUTH_CLIENT_IDS: 'x', DEV_AUTH: '1' });
+    expect(result.devAuth).toBe(true);
+  });
+
+  it('N6: DEV_AUTH "false" -> devAuth === false', () => {
+    const result = loadAuthEnv({ GOOGLE_OAUTH_CLIENT_IDS: 'x', DEV_AUTH: 'false' });
+    expect(result.devAuth).toBe(false);
+  });
+
+  it('N6: DEV_AUTH "0" -> devAuth === false', () => {
+    const result = loadAuthEnv({ GOOGLE_OAUTH_CLIENT_IDS: 'x', DEV_AUTH: '0' });
+    expect(result.devAuth).toBe(false);
+  });
+
+  it('N6: DEV_AUTH unset -> devAuth === false', () => {
+    const result = loadAuthEnv({ GOOGLE_OAUTH_CLIENT_IDS: 'x' });
+    expect(result.devAuth).toBe(false);
+  });
+
+  it('N6: DEV_AUTH "" -> devAuth === false', () => {
+    const result = loadAuthEnv({ GOOGLE_OAUTH_CLIENT_IDS: 'x', DEV_AUTH: '' });
+    expect(result.devAuth).toBe(false);
+  });
+
+  it('trims whitespace around comma-separated IDs', () => {
+    const result = loadAuthEnv({ GOOGLE_OAUTH_CLIENT_IDS: ' a , b , c ' });
+    expect(result.GOOGLE_OAUTH_CLIENT_IDS).toEqual(['a', 'b', 'c']);
+  });
+
+  it('single client ID is returned as a one-element array', () => {
+    const result = loadAuthEnv({ GOOGLE_OAUTH_CLIENT_IDS: 'only-one' });
+    expect(result.GOOGLE_OAUTH_CLIENT_IDS).toEqual(['only-one']);
+  });
+
+  it('is not invoked at import time (no top-level side-effect)', () => {
+    // If loadAuthEnv ran at import time it would throw (no GOOGLE_OAUTH_CLIENT_IDS in
+    // process.env during tests). The fact that this suite loads the module without throwing
+    // proves the lazy contract.
+    expect(true).toBe(true);
   });
 });

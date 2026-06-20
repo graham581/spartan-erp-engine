@@ -38,7 +38,9 @@ function seed(store) {
       { role: 'admin',     doctype: 'Job', permlevel: 0, read: true, write: true, create: true },
       { role: 'scheduler', doctype: 'Job', permlevel: 0, read: true, write: true, create: true },
       { role: 'factory',   doctype: 'Job', permlevel: 0, read: true, write: true, create: true },
-      { role: 'rep',       doctype: 'Job', permlevel: 0, read: true, write: true, create: true },
+      { role: 'rep',       doctype: 'Job', permlevel: 0, read: true,  ifOwner: true },
+      { role: 'rep',       doctype: 'Job', permlevel: 0, write: true, ifOwner: true },
+      { role: 'rep',       doctype: 'Job', permlevel: 0, create: true },
     ],
   });
 
@@ -94,7 +96,7 @@ function seed(store) {
 const admin     = makeContext({ user: 'a@x',     roles: ['admin'],     unrestricted: true });
 const scheduler = makeContext({ user: 'laura@x', roles: ['scheduler'], scopes: { branch: 'VIC' } });
 const factory   = makeContext({ user: 'f@x',     roles: ['factory'],   scopes: { branch: 'VIC' } });
-const rep       = makeContext({ user: 'rep@x',   roles: ['rep'],       scopes: { branch: 'VIC' }, ownerOnly: true });
+const rep       = makeContext({ user: 'rep@x',   roles: ['rep'],       scopes: { branch: 'VIC' } });
 
 describe('workflow', () => {
   /** @type {MemoryStore} */
