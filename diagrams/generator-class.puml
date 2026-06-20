@@ -1,0 +1,206 @@
+@startuml generator-class
+' Pass D — GENERATOR layer + Single model + depends_on mini-pass
+' ARCHITECT design, REVISED after critique pass 1 (D1 FAIL / D2 FAIL / D3 PASS). 2026-06-20.
+'
+' Scope:
+'   D1  ERPNext DocType JSON -> engine DocMeta def  (new: src/generator/)
+'   D2  Single / Settings doctypes (issingle)       (3-SITE runtime change)
+'   D3  depends_on mini-pass (whole chain)          (new: src/runtime/depends-on.js + 5 edits)
+'
+' Relationships to the FROZEN reuse path (do NOT reinvent these):
+'   installer.emitMigration / syncDoctype / migrate  <- generator output feeds here
+'   ddl.PG_TYPE_MAP / createTableSql                  <- fieldtype->PG mapping target
+'   def-schema.assertValidDef                         <- generator output MUST pass it (every closure def)
+'   boot-meta.META_DOCTYPES (DocField entry)          <- depends_on columns added here
+'   loader.load                                       <- depends_on read-back + issingle read here
+'   validate.validateAgainstMeta                      <- depends_on evaluator runs here
+
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+hide empty members
+
+package "src/generator  (NEW — D1)" {
+
+  class "erpnext-to-def.js" as Gen {
+    .. public ..
+    +erpnextJsonToDef(json) : DocMetaDef
+    +isRealDoctype(json) : boolean
+    .. internal (pure) ..
+    -mapField(erpField) : FieldDef|null
+    -tableNameFor(name) : string
+    -mapAutoname(json) : {autoname, naming_rule}
+    -mapPermission(erpPerm) : DocPerm
+    .. notes ..
+    ' isRealDoctype: json.doctype === "DocType" (filters the 635 -> real defs)
+    ' table:        "tab" + name.replace(/\\s+/g,"")  (matches loader.js:135 char-for-char)
+    ' submittable/issingle/istable: !!json.is_submittable / .issingle / .istable
+    ' scopeFields:  [] (ERPNext has no scope concept; CRM curates later)
+    ' fields:       json.fields.map(mapField).filter(Boolean)  (drops layout + unsupported)
+  }
+
+  class "mapField — EXPLICIT KEY-WHITELIST (D1-2)" as MapField {
+    ' Builds FieldDef key-by-key. NEVER a spread of the ERPNext field.
+    ' Output carries ONLY:
+    '   { fieldname, fieldtype, reqd, readOnly, unique,
+    '     permlevel, options, fetchFrom, idx }
+    ' ==== FROZEN CONTRACT — D1->D3 SECURITY BOUNDARY ====
+    '   depends_on / mandatory_depends_on are RAW "eval:..." strings (86 in Selling slice).
+    '   They are NOT on the whitelist -> dropped BY CONSTRUCTION.
+    '   A generated FieldDef NEVER carries dependsOn/mandatoryDependsOn.
+    '   A spread { ...f } would re-admit them = FORBIDDEN.
+    '   TEST asserts: source depends_on strings -> 0 generated dependsOn keys.
+    ' Dynamic Link -> Data AND options STRIPPED (options is a fieldname, not a doctype).
+  }
+
+  class "fieldtype-map.js" as FTMap {
+    +ERP_TO_ENGINE : Map<string,string>
+    +LAYOUT_TYPES : Set<string>
+    +mapFieldtype(erpType) : engineType | SKIP
+    .. policy ..
+    ' SUPPORTED -> engine fieldtype already in PG_TYPE_MAP:
+    '   Data/Small Text/Read Only -> Data ; Text/Text Editor/Code -> Text/Code
+    '   Select -> Select ; Link -> Link ; Int -> Int ; Float/Percent -> Float
+    '   Currency -> Currency ; Check -> Check ; Date -> Date ; Datetime -> Datetime
+    '   Table / Table MultiSelect -> Table (no column; child rows; options = closure dep)
+    ' LAYOUT (SKIP, no column): Section/Column/Tab Break, HTML, Button, Fold, Heading
+    ' UNSUPPORTED data types (Time, Dynamic Link, Attach, Image, Duration...):
+    '   MAP-TO-TEXT-with-warn (fail-open for data; never silently drop a value)
+  }
+
+  class "select-doctypes.js" as Selector {
+    +listAllDoctypeFiles(rootDir) : string[]
+    +closureOver(seeds, rootDir) : string[]
+    .. D1-1: CLOSURE ON BY DEFAULT ..
+    ' Sales Order Links/Tables to 35 distinct targets, MOST outside selling/
+    '   (Address, Company, Project, Warehouse, Cost Center, Currency, Contact...).
+    ' loader._primeLinkTarget (loader.js:233-243) THROWS NotFoundError at runtime
+    '   on the FIRST missing target -> generating without closure = a def that can't load.
+    ' (a) default: expand seeds to full transitive closure before generating.
+    ' (b) guard:   --no-closure => FAIL-AT-GENERATE if any Link/Table target is outside the set.
+    ' assertValidDef runs over EVERY def in the closure (not just seeds) — D1-3.
+  }
+}
+
+package "src/meta  (FROZEN reuse path)" {
+  class "installer.js" as Installer {
+    +emitMigration(def) : path
+    +syncDoctype(def, store)
+    +migrate(def, store, {admin,writer})
+    ' --apply needs PgStore+PgAdmin (SupabaseStore.transaction throws — Pass B).
+  }
+  class "ddl.js" as DDL {
+    +PG_TYPE_MAP
+    +createTableSql(def)
+  }
+  class "def-schema.js" as DefSchema {
+    +assertValidDef(def)
+    ' FIELDTYPE enum = Object.keys(PG_TYPE_MAP) + 'Table'.
+    ' Generator emits ONLY enum fieldtypes; run over EVERY closure def.
+  }
+  class "boot-meta.js" as BootMeta {
+    +META_DOCTYPES
+    ' D3: add to DocField meta entry (boot-meta.js:60-74):
+    '   { fieldname:'depends_on',           fieldtype:'Code' }
+    '   { fieldname:'mandatory_depends_on', fieldtype:'Code' }
+  }
+  class "loader.js" as Loader {
+    +load(doctype, store)
+    +ensure(doctype, store)
+    ' D2: in load() scalar step read row.issingle -> new Meta({issingle})  (loader.js:126-138)
+    ' D3: in load() field map add dependsOn:f.depends_on / mandatoryDependsOn:f.mandatory_depends_on
+  }
+  class "meta.js  (D2 — NET-NEW field)" as MetaCls {
+    +get issingle()
+    ' Today NO issingle on Meta (meta.js:14-33). ADD:
+    '   this._issingle = Boolean(def.issingle ?? false)  + get issingle()
+    '   (mirrors _submittable / get submittable exactly)
+  }
+  class "registry.js" as Registry {
+    ' D3: FieldDef typedef gains dependsOn?/mandatoryDependsOn? (structured Condition, NEVER string)
+  }
+}
+
+package "src/runtime" {
+  class "depends-on.js  (NEW — D3, PASSED critique)" as DependsOn {
+    +evalCondition(cond, doc) : boolean
+    +isRelevant(cond, doc) : boolean
+    -OPS : closed operator table
+    .. NO-EVAL GUARANTEE ..
+    ' NO eval / NO new Function. Condition is structured DATA:
+    '   leaf {field,op,value?} | {all:[]} | {any:[]} | {not:{}}
+    ' Op: eq|neq|in|nin|gt|gte|lt|lte|truthy|falsy|set|notset
+    ' Reads ONLY doc[cond.field]. {all:[]}=>true {any:[]}=>false undef cond=>true
+    ' in/nin non-array => throw ; unknown op => throw ; depth cap 32 => throw
+    ' eq/neq Check coercion mirrors validate.js:31
+    ' MISSING FIELD (C-D3-2): doc[field] undefined => NO throw, fail-closed for
+    '   relevance (set/truthy=>false, notset/falsy=>true) => field not relevant.
+  }
+  class "document.js  (D2 — site 3)" as Document {
+    +save() / insert()
+    ' D2-2: at TOP of save/insert, BEFORE any !doc.name test:
+    '   if (this.meta.issingle) this.doc.name = this.meta.doctype;
+    ' => resolveName NEVER runs for a Single (else hash branch = random name = new row each save)
+  }
+  class "naming.js" as Naming {
+    +resolveName(meta, doc, store)
+    ' meta.autoname || 'hash' (naming.js:13). Stays ignorant of Singles (SoC).
+  }
+  class "validate.js" as Validate {
+    +validateAgainstMeta(meta, doc, store)
+    ' D3 integration (adr-validation-layer.md §3):
+    '   if (f.dependsOn && !isRelevant(f.dependsOn, doc)) continue;   // relevance FIRST
+    '   required = f.reqd || (f.mandatoryDependsOn && isRelevant(f.mandatoryDependsOn, doc))
+    '   THEN empty/required check, then existing type checks (unchanged)
+  }
+}
+
+package "supabase/migrations  (D3)" {
+  class "<ts>_docfield_depends_on.sql" as Migration {
+    ' ALTER TABLE "tabDocField" ADD COLUMN IF NOT EXISTS depends_on text;
+    ' ALTER TABLE "tabDocField" ADD COLUMN IF NOT EXISTS mandatory_depends_on text;
+    ' -- ROLLBACK (C-D3-3): drop column if exists depends_on / mandatory_depends_on;
+  }
+}
+
+package "scripts  (NEW — D1 CLI)" {
+  class "generate-doctypes.mjs" as CLI {
+    ' node scripts/generate-doctypes.mjs <Doctype...> [--no-closure] [--emit|--apply]
+    ' closure ON by default ; --emit -> emitMigration ; --apply -> migrate(PgAdmin+PgStore)
+  }
+}
+
+' ---- generator wiring ----
+Gen ..> MapField     : per field
+Gen ..> FTMap        : mapFieldtype
+Gen ..> DefSchema    : output validated (every closure def)
+Selector ..> Gen     : feeds closed json set
+CLI ..> Selector
+CLI ..> Gen
+CLI ..> Installer    : def -> emitMigration | migrate
+
+' ---- fieldtype map alignment ----
+FTMap ..> DDL        : engine fieldtypes are keys of PG_TYPE_MAP (+Table)
+
+' ---- D2 Single (3 sites) ----
+Loader ..> MetaCls   : read row.issingle -> Meta.issingle
+Document ..> MetaCls : branch on meta.issingle
+Document ..> Naming  : resolveName SKIPPED for Singles
+
+' ---- D3 depends_on chain ----
+Migration ..> BootMeta : columns exist for the meta to see
+BootMeta ..> Loader    : DocField cols visible to read-back
+Installer ..> Loader   : writes depends_on snake cols (round-trip)
+Loader ..> Registry    : FieldDef.dependsOn populated (Condition, never string)
+Validate ..> DependsOn : relevance + effective-required gate
+Validate ..> Registry  : reads FieldDef.dependsOn
+
+' ---- the one cross-phase coupling: D1 -> D3 security boundary ----
+MapField ..> DependsOn : <<security boundary>> drops eval-strings
+
+note bottom of MapField
+  D1->D3 SECURITY COUPLING (C-D3-1): the phases do NOT "share no code".
+  D3 must NOT ship until this frozen drop-contract is tested.
+  ERPNext depends_on STRING -> structured Condition translation stays a
+  SEPARATE later sub-pass; generator does NOT auto-translate eval-strings.
+end note
+@enduml
