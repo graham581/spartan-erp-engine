@@ -50,6 +50,7 @@ export class Document {
 
   // ---- persistence ----
   async insert() {
+    if (this.meta.issingle) this.doc.name = this.meta.doctype;                 // U6 — Singles use doctype as name
     if (!this.doc.name) this.doc.name = await resolveName(this.meta, this.doc, this.store);
     this.doc.docstatus ??= 0;
     this.doc.idx ??= 0;
@@ -64,6 +65,7 @@ export class Document {
   }
 
   async save() {
+    if (this.meta.issingle) this.doc.name = this.meta.doctype;                 // U6 — Singles use doctype as name
     if (!this.doc.name) return this.insert();
     this.doc.modified = nowISO();
     await this.#runChecks();
@@ -178,6 +180,15 @@ export function newDoc(doctype, doc, store) {
 export async function loadDoc(doctype, name, store) {
   const meta = getMeta(doctype);
   const row = await store.get(meta.table, name);
+  // U6 — Singles "always exist": absent row → synthesise an empty doc with defaults.
+  // The read still flows through the normal perms path (no short-circuit here).
+  if (!row && meta.issingle) {
+    const defaults = { name: meta.doctype };
+    for (const f of meta.fields) {
+      if (f.default !== undefined) defaults[f.fieldname] = f.default;
+    }
+    return newDoc(doctype, defaults, store);
+  }
   if (!row) throw new NotFoundError(`${doctype} ${name} not found`);
   const doc = { ...row };
   for (const ct of meta.childTables) {

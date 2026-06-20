@@ -88,6 +88,8 @@ export async function load(doctype, store) {
     unique:     !!(f.unique),
     fetchFrom:  f.fetch_from,
     idx:        Number(f.idx ?? 0),
+    dependsOn:          f.depends_on           ?? null,
+    mandatoryDependsOn: f.mandatory_depends_on ?? null,
   }));
 
   // Step 3 — read DocPerm children and map (ADR §5)
@@ -130,12 +132,13 @@ export async function load(doctype, store) {
   // convention for boot-seeded types, but for loaded types we derive tab<Doctype>).
   const scopeFields  = Array.isArray(row.scope_fields) ? row.scope_fields : [];
   const submittable  = !!(row.is_submittable);
+  const issingle     = !!(row.issingle);                                        // NEW (U6)
   const autoname     = row.autoname || undefined;
   // Derive table name: "tab" + doctype with spaces removed (matches Frappe convention)
   const table = `tab${doctype.replace(/\s+/g, '')}`;
 
   // Step 6 — assemble and register
-  const meta = new Meta({ doctype, table, submittable, autoname, fields, childTables, scopeFields, permissions });
+  const meta = new Meta({ doctype, table, submittable, issingle, autoname, fields, childTables, scopeFields, permissions });
   setMeta(doctype, meta, false);
   return meta;
 }

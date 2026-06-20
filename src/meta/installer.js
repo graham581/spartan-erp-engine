@@ -128,6 +128,8 @@ export async function syncDoctype(def, store) {
       unique:      f.unique      ?? false,
       fetch_from:  f.fetchFrom   ?? null,
       idx:         f.idx         ?? i,
+      depends_on:           f.dependsOn           ?? null,
+      mandatory_depends_on: f.mandatoryDependsOn  ?? null,
     })),
     permissions: (def.permissions ?? []).map((p, i) => ({
       role:       p.role,

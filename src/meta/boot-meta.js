@@ -71,6 +71,8 @@ export const META_DOCTYPES = [
       { fieldname: 'unique',      fieldtype: 'Check' },
       { fieldname: 'fetch_from',  fieldtype: 'Data' },
       { fieldname: 'idx',         fieldtype: 'Int' },
+      { fieldname: 'depends_on',           fieldtype: 'Code' },
+      { fieldname: 'mandatory_depends_on', fieldtype: 'Code' },
     ],
     childTables: [],
     scopeFields:  [],

@@ -16,6 +16,8 @@ import { NotFoundError } from '../runtime/errors.js';
  * @property {boolean} [unique]   value must be unique across the table
  * @property {string} [fetchFrom] 'linkField.sourceField' — copy from a linked doc on save
  * @property {number} [idx]
+ * @property {object} [dependsOn]          structured Condition object (NOT a string); e.g. {field,op,value} or {all:[]} / {any:[]} / {not:…}
+ * @property {object} [mandatoryDependsOn] structured Condition object; field becomes mandatory when condition is truthy
  *
  * @typedef {Object} ChildTableDef
  * @property {string} field       parent fieldname holding the rows

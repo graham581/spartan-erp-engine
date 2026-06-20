@@ -1,4 +1,5 @@
 import { ValidationError } from './errors.js';
+import { isRelevant } from './depends-on.js';
 
 const NUMERIC = new Set(['Int', 'Float', 'Currency']);
 
@@ -13,10 +14,11 @@ const NUMERIC = new Set(['Int', 'Float', 'Currency']);
  */
 export async function validateAgainstMeta(meta, doc, store) {
   for (const f of meta.fields) {
+    if (f.dependsOn && !isRelevant(f.dependsOn, doc)) continue;        // relevance gate FIRST
     const v = doc[f.fieldname];
     const empty = v === undefined || v === null || v === '';
-
-    if (f.reqd && empty) throw new ValidationError(`${meta.doctype}: '${f.fieldname}' is required`);
+    const required = f.reqd || (f.mandatoryDependsOn && isRelevant(f.mandatoryDependsOn, doc));
+    if (required && empty) throw new ValidationError(`${meta.doctype}: '${f.fieldname}' is required`);
     if (empty) continue;
 
     if (f.fieldtype === 'Select') {
