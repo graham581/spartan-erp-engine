@@ -1,0 +1,222 @@
+@startuml desk-bridge-class
+' ============================================================================
+' Desk Bridge — read-only metadata + boot projection over existing authority.
+' Engine analog of Frappe get_bootinfo (boot.py) + getdoctype/get_meta_bundle
+' (frappe/desk/form/load.py + meta.py), verified on develop 2026-06-21.
+' REVISED after critique FAIL: C-1 (istable plumb), C-2 (F3 childTables-only),
+' C-3 (fail-closed boot loop).
+'
+' INVARIANTS (state, do not violate):
+'  - READ-ONLY: no mutation. Meta EDITING stays on the authoritative write path
+'    POST /api/DocType (DocType doctype, perm-gated, is_stub reserved). Bridge
+'    does not touch it. (The istable plumb is read-path-only.)
+'  - NO NEW AUTHORITY: composes ONLY existing primitives. Adds no trust surface.
+'  - 403-on-no-read: you cannot fetch meta of a doctype you cannot read.
+'  - permlevel masking REUSES visibleFields() — never returns a field above the
+'    user's read permlevel.
+'  - capability summary is COSMETIC (show/hide buttons); engine re-checks every
+'    real call on /api/[doctype].
+'  - FAIL-CLOSED: a malformed doctype during boot enumeration is omitted+logged,
+'    never propagated (C-3).
+' ============================================================================
+
+' ---------------------------------------------------------------------------
+' New route files (mirror the existing api/[doctype]/* Vercel pattern)
+' ---------------------------------------------------------------------------
+
+class "api/boot.js" as BootRoute <<vercel-route>> {
+  + default handler(req, res)
+  .. mirrors api/[doctype]/index.js ..
+  - store() : SupabaseStore        ' lazy module singleton
+  note right
+    GET /api/boot
+    1. ctx = await ctxFromRequest(req, store())   ' AuthError -> 401 here
+    2. { status, body } = await buildBoot(ctx, store())
+    3. res.status(status).json(body)
+    catch AuthError -> 401 ; else -> 500
+  end note
+}
+
+class "api/meta/[doctype].js" as MetaRoute <<vercel-route>> {
+  + default handler(req, res)
+  .. mirrors api/[doctype]/[name].js ..
+  - store() : SupabaseStore        ' lazy module singleton
+  note right
+    GET /api/meta/<doctype>
+    1. doctype = decodeURIComponent(req.query.doctype)
+    2. ctx = await ctxFromRequest(req, store())   ' AuthError -> 401 here
+    3. { status, body } = await buildMeta(ctx, doctype, store())
+    4. res.status(status).json(body)
+    catch AuthError -> 401 ; else -> 500
+  end note
+}
+
+' ---------------------------------------------------------------------------
+' New bridge service (src/api/desk-bridge.js) — the only new PROJECTION code.
+' Pure projection: composes existing primitives, never throws raw; maps errors
+' the same way handler.js does (statusFor reused via the shared error classes).
+' ---------------------------------------------------------------------------
+
+class "src/api/desk-bridge.js" as Bridge <<service>> {
+  + buildBoot(ctx, store) : Promise<{status,body}>
+  + buildMeta(ctx, doctype, store) : Promise<{status,body}>
+  .. private ..
+  - permittedDoctypes(ctx, store) : Promise<string[]>
+  - projectMeta(ctx, doctype) : MaskedMeta   ' sync; meta already ensure()'d
+  - capabilitySummary(ctx, doctype) : {read,write,create,delete,submit,cancel}
+  - projectWorkflow(ctx, doctype, store) : Promise<WorkflowView|null>
+  - statusFor(err) : number                  ' reuse handler's mapping
+}
+
+note top of Bridge
+  buildBoot(ctx, store):
+    - GUEST -> lean empty boot ({ user:'guest', roles:[], scopes:{}, doctypes:[],
+      server_date }), 200 (never 500)
+    - identity   = { user: ctx.user, roles: ctx.roles, scopes: ctx.scopes }
+    - doctypes   = await permittedDoctypes(ctx, store)
+    -> { status:200, body:{ user, roles, scopes, doctypes, server_date } }
+
+  buildMeta(ctx, doctype, store):
+    - try:
+        await ensure(doctype, store)            ' prime meta + Link/Table closure
+        if !can(ctx, doctype, 'read') -> throw PermissionError   ' 403
+        return { status:200, body: bundle }
+    - catch err -> { status: statusFor(err), body:{ error, type } }
+      (NotFoundError unknown doctype -> 404 ; PermissionError -> 403)
+
+  bundle (Frappe get_meta_bundle analog — INLINE child metas, one round-trip):
+    {
+      doctype,
+      capabilities: capabilitySummary(ctx, doctype),   ' cosmetic
+      meta:        projectMeta(ctx, doctype),          ' masked parent
+      child_metas: { <childDoctype>: projectMeta(ctx, childDoctype), ... },
+      workflow:    await projectWorkflow(ctx, doctype, store)  ' may be null
+    }
+end note
+
+note bottom of Bridge
+  permittedDoctypes(ctx, store):  [FORK F1 — LEAD ruling folded in]
+    rows = await store.list('tabDocType', { filters:{ is_stub:false } })
+    candidates = union(rows.map(r=>r.name), allDoctypes())  ' incl pinned/in-code
+    for each dt in candidates:
+      try:
+        await ensure(dt, store)
+        m = getMeta(dt)
+        if (!m.istable && !m.isStub && can(ctx, dt, 'read')) keep dt   ' SAME filter for all
+      catch err:
+        omit dt + log(err)        ' C-3 FAIL-CLOSED: one bad row never 500s boot
+    -> filtered names. NEVER a doctype the ctx can't read; NEVER a child/table.
+
+  projectMeta(ctx, dt):  permlevel masking REUSES visibleFields()
+    visible = new Set(visibleFields(ctx, dt))
+    fields  = meta.fields.filter(f => visible.has(f.fieldname))
+              .map(strip-internal: fieldname,fieldtype,reqd,options,
+                   readOnly,unique,idx,dependsOn,mandatoryDependsOn)
+    -> { doctype, autoname, submittable, issingle, istable, isStub, fields,
+         childTables: meta.childTables, scopeFields: meta.scopeFields }
+    ' permissions[] (DocPerm rows) are NOT projected — collapsed to
+    ' capabilities + masked fields. Raw perm rows never leave the engine.
+
+  child_metas:  [FORK F3 — LEAD ruling: childTables ONLY]
+    iterate meta.childTables ONLY (derived from fieldtype==='Table', loader.js:111
+    -> Link targets are NEVER here). Never walk fields Link targets or the
+    ensure-closure. Each child run through projectMeta (per-child field masking),
+    inheriting the parent's read grant (children carry no own DocPerm rows).
+
+  projectWorkflow(ctx, dt, store):  [FORK F2 — LEAD ruling: FULL graph]
+    wf = await getWorkflow(dt, store)        ' async; loads if cold
+    if !wf -> null
+    return full graph (states + ALL transitions WITH roles[]); Desk grays-out;
+    engine re-gates on the real POST action call. (availableActions() unusable:
+    needs a loaded doc; meta has none.)
+end note
+
+' ---------------------------------------------------------------------------
+' C-1 — istable read-path plumb (part of this build). Mirrors issingle/isStub.
+' Without it meta.istable is undefined -> boot !istable filter is a no-op ->
+' child/meta doctypes leak into boot doctypes[].
+' ---------------------------------------------------------------------------
+
+class "meta/loader.js  (EDIT)" as LoaderEdit <<build-edit>> {
+  load(doctype, store):
+    + const istable = !!(row.istable)          ' NEW — read the column
+    pass istable into new Meta({ ... issingle, isStub, istable, ... })
+  note right
+    istable COLUMN verified to exist:
+      migrations/20260620010000_meta_core.sql:31 (bool, default false)
+      installer.syncDoctype writes it (installer.js:116)
+    -> NO migration needed; read-path only.
+  end note
+}
+
+class "meta/meta.js  (EDIT)" as MetaEdit <<build-edit>> {
+  + this._istable = Boolean(def.istable ?? false)   ' NEW, in constructor
+  + get istable() : boolean                          ' NEW getter
+  .. unchanged ..
+  get issingle()
+  get isStub()
+}
+
+' ---------------------------------------------------------------------------
+' Reused primitives (EXISTING — bridge composes, never reimplements)
+' ---------------------------------------------------------------------------
+
+class "context-from-request.js" as CtxFromReq <<reuse>> {
+  + ctxFromRequest(req, store) : Promise<Ctx>   ' Google idToken | dev | GUEST
+}
+
+class "perms/permissions.js" as Perms <<reuse>> {
+  + can(ctx, doctype, op, doc?) : boolean
+  + visibleFields(ctx, doctype) : string[]      ' permlevel field mask
+}
+
+class "meta/loader.js" as Loader <<reuse>> {
+  + ensure(doctype, store) : Promise<void>       ' prime + Link/Table closure
+}
+
+class "meta/registry.js" as Registry <<reuse>> {
+  + getMeta(doctype) : Meta                       ' sync, cache-only
+  + allDoctypes() : string[]                       ' warm cache names
+}
+
+class "workflow/workflow.js" as Workflow <<reuse>> {
+  + getWorkflow(doctype, store) : Promise<WorkflowDef|null>
+}
+
+class "api/handler.js" as Handler <<reuse-pattern>> {
+  + statusFor(err) : number   ' Auth401/Perm403/NotFound404/State409/Valid400
+}
+
+class "runtime/errors.js" as Errors <<reuse>> {
+  PermissionError
+  NotFoundError
+  AuthError
+}
+
+' ---------------------------------------------------------------------------
+' Edges
+' ---------------------------------------------------------------------------
+
+BootRoute --> CtxFromReq      : ctxFromRequest()
+BootRoute --> Bridge          : buildBoot()
+MetaRoute --> CtxFromReq      : ctxFromRequest()
+MetaRoute --> Bridge          : buildMeta()
+
+Bridge --> Loader             : ensure() (prime before read)
+Bridge --> Perms              : can() / visibleFields()
+Bridge --> Registry           : getMeta() (reads m.istable) / allDoctypes()
+Bridge --> Workflow           : getWorkflow()
+Bridge --> Handler            : statusFor() (shared error map)
+Bridge ..> Errors             : throws PermissionError (403 on no-read)
+
+' C-1 plumb feeds the istable signal the bridge filters on
+LoaderEdit ..> MetaEdit       : new Meta({ ... istable })
+MetaEdit ..> Registry         : Meta.istable now real (was undefined)
+
+' Authoritative WRITE path — bridge does NOT touch it (read-only invariant)
+class "api/[doctype]/*.js" as WritePath <<existing-authority>> {
+  POST /api/DocType  ' meta editing stays here, perm-gated
+}
+Bridge ..> WritePath : <<does NOT call>>\nmeta edits go here
+
+@enduml

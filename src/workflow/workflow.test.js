@@ -3,7 +3,7 @@ import { MemoryStore } from '../runtime/memory-store.js';
 import { registerDoctype, _resetRegistry } from '../meta/registry.js';
 import { registerBootMeta } from '../meta/boot-meta.js';
 import { WORKFLOW_HOOKS, getHooks } from './hooks.js';
-import { _resetWorkflowCache } from './workflow.js';
+import { _resetWorkflowCache, getWorkflow } from './workflow.js';
 import { makeContext } from '../perms/context.js';
 import { createDoc, transitionDoc } from '../api/service.js';
 import { handle } from '../api/handler.js';
@@ -160,5 +160,33 @@ describe('workflow', () => {
     const rj = await newJob(rep, { deposit_paid: true }); // owner rep@x — rep can see it, but lacks the role
     const denied = await handle({ method: 'POST', doctype: 'Job', name: rj.name, body: { action: 'start_measure' }, ctx: rep }, store);
     expect(denied.status).toBe(403);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getWorkflow export check (U1)
+// ---------------------------------------------------------------------------
+
+describe('getWorkflow — named export (U1)', () => {
+  it('is importable as a named export from workflow.js', () => {
+    expect(typeof getWorkflow).toBe('function');
+  });
+
+  it('returns the workflow graph for a seeded doctype', async () => {
+    const store = new MemoryStore();
+    seed(store);
+    const wf = await getWorkflow('Job', store);
+    expect(wf).not.toBeNull();
+    expect(wf.stateField).toBe('status');
+    expect(Array.isArray(wf.states)).toBe(true);
+    expect(Array.isArray(wf.transitions)).toBe(true);
+    expect(wf.transitions.length).toBeGreaterThan(0);
+  });
+
+  it('returns null for a doctype with no workflow row', async () => {
+    const store = new MemoryStore();
+    // No seed — no tabWorkflow row for 'NoWorkflowDoc'
+    const wf = await getWorkflow('NoWorkflowDoc', store);
+    expect(wf).toBeNull();
   });
 });

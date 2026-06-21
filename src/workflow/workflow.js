@@ -108,7 +108,7 @@ async function loadWorkflow(doctype, store) {
  * @param {import('../runtime/store.js').Store} store
  * @returns {Promise<WorkflowDef|null>}
  */
-async function getWorkflow(doctype, store) {
+export async function getWorkflow(doctype, store) {
   if (WORKFLOW_DEFS.has(doctype)) return WORKFLOW_DEFS.get(doctype);
   return loadWorkflow(doctype, store);
 }

@@ -498,3 +498,43 @@ describe('load() — is_stub round-trip (U-MARKER)', () => {
     expect(typeof meta.isStub).toBe('boolean');
   });
 });
+
+// ---------------------------------------------------------------------------
+// load() — istable round-trip (U1)
+// ---------------------------------------------------------------------------
+
+describe('load() — istable round-trip (U1)', () => {
+  it('sets meta.istable === true when tabDocType.istable is true', async () => {
+    const store = new MemoryStore();
+    await seedDocType(store, 'TableChild', { istable: true });
+
+    const meta = await load('TableChild', store);
+    expect(meta.istable).toBe(true);
+  });
+
+  it('sets meta.istable === false when tabDocType.istable is false', async () => {
+    const store = new MemoryStore();
+    await seedDocType(store, 'TopLevel', { istable: false });
+
+    const meta = await load('TopLevel', store);
+    expect(meta.istable).toBe(false);
+  });
+
+  it('sets meta.istable === false when tabDocType.istable is absent (safe-degrade)', async () => {
+    const store = new MemoryStore();
+    // istable column not present (safe-degrade: missing column → false)
+    await seedDocType(store, 'LegacyTopLevel');
+
+    const meta = await load('LegacyTopLevel', store);
+    expect(meta.istable).toBe(false);
+  });
+
+  it('istable is a real boolean, not a truthy value', async () => {
+    const store = new MemoryStore();
+    await seedDocType(store, 'TableChild2', { istable: 1 });  // DB may return 1, not true
+
+    const meta = await load('TableChild2', store);
+    expect(meta.istable).toBe(true);
+    expect(typeof meta.istable).toBe('boolean');
+  });
+});

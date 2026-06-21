@@ -41,6 +41,7 @@ import { NotFoundError } from '../runtime/errors.js';
  * @property {string} table
  * @property {boolean} [submittable]
  * @property {boolean} [isStub]
+ * @property {boolean} [istable]
  * @property {string} [autoname]  'hash' | 'field:<name>' | naming-series prefix
  * @property {FieldDef[]} fields
  * @property {ChildTableDef[]} childTables
