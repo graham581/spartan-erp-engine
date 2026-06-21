@@ -19,9 +19,15 @@ const REAUTH_TIMEOUT_MS = 3000;
  */
 export function createSession({
   clientId,
-  gis = globalThis.google,
+  gis,
   storage = globalThis.sessionStorage,
 } = {}) {
+  // The GSI script is async/defer, so globalThis.google may not exist yet when
+  // createSession() runs (during start()). Resolve GIS LAZILY at every use — the old
+  // `gis = globalThis.google` default froze it as undefined and the sign-in button
+  // silently never rendered (white screen). Tests inject `gis` (override wins).
+  const resolveGis = () => gis || globalThis.google;
+
   // Module-scope token owner — the ONLY place the raw string lives.
   let _token = null;
   const _listeners = [];
@@ -78,11 +84,19 @@ export function createSession({
    *
    * @param {Element} mountEl
    */
-  function renderGate(mountEl) {
+  function renderGate(mountEl, _attempt = 0) {
     // DOM operations — no-op in node (test) environment.
     if (typeof document === 'undefined') return;
-    if (!gis || !gis.accounts || !gis.accounts.id) {
-      return; // GIS not loaded yet — caller must ensure the GSI script is present.
+    const g = resolveGis();
+    if (!g || !g.accounts || !g.accounts.id) {
+      // GIS (async/defer) hasn't finished loading yet — retry briefly until it has, so the
+      // button appears once google.accounts.id is ready (instead of a permanent white gate).
+      if (_attempt < 50) {                               // ~50 × 150ms ≈ 7.5s
+        setTimeout(() => renderGate(mountEl, _attempt + 1), 150);
+      } else if (mountEl) {
+        mountEl.innerHTML = '<p>Google Sign-In failed to load — refresh to retry.</p>';
+      }
+      return;
     }
 
     mountEl.innerHTML = '';
@@ -98,7 +112,7 @@ export function createSession({
     wrapper.appendChild(buttonEl);
     mountEl.appendChild(wrapper);
 
-    gis.accounts.id.initialize({
+    g.accounts.id.initialize({
       client_id: clientId,
       callback: (response) => {
         if (response && response.credential) {
@@ -109,7 +123,7 @@ export function createSession({
       },
     });
 
-    gis.accounts.id.renderButton(buttonEl, {
+    g.accounts.id.renderButton(buttonEl, {
       type: 'standard',
       theme: 'outline',
       size: 'large',
@@ -129,7 +143,8 @@ export function createSession({
    */
   function reauth() {
     return new Promise((resolve, reject) => {
-      if (!gis || !gis.accounts || !gis.accounts.id) {
+      const g = resolveGis();
+      if (!g || !g.accounts || !g.accounts.id) {
         reject(new Error('GIS not available'));
         return;
       }
@@ -170,7 +185,7 @@ export function createSession({
       }, REAUTH_TIMEOUT_MS);
 
       // Fire silent prompt. GIS may call our callback synchronously or asynchronously.
-      gis.accounts.id.prompt((notification) => {
+      g.accounts.id.prompt((notification) => {
         // If GIS explicitly says it can't sign in silently we can skip the timeout wait.
         if (
           notification &&
@@ -204,8 +219,9 @@ export function createSession({
       const mountEl = document.getElementById('desk-app') || document.body;
       renderGate(mountEl);
     }
-    if (gis && gis.accounts && gis.accounts.id) {
-      gis.accounts.id.disableAutoSelect();
+    const g = resolveGis();
+    if (g && g.accounts && g.accounts.id) {
+      g.accounts.id.disableAutoSelect();
     }
   }
 
