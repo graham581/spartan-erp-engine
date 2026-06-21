@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Spartan ERP Desk</title>
+  <link rel="stylesheet" href="css/desk.css" />
+</head>
+<body>
+  <!-- GIS sign-in gate — shown when no token is present (DC3 / U9) -->
+  <div id="desk-gate" class="desk-gate"></div>
+
+  <!-- App shell — visible once signed in -->
+  <div id="desk-app" class="desk-app">
+    <aside id="desk-sidebar" class="desk-sidebar"></aside>
+    <main id="desk-view" class="desk-view"></main>
+  </div>
+
+  <!-- Google Identity Services — must load before main.js uses it (DC1 / U3) -->
+  <!-- async+defer: GIS loads in the background; Session.renderGate() checks availability -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+
+  <!-- Desk entry point — loaded as ES module (DC5 / U9) -->
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

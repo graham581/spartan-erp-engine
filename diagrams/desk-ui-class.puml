@@ -1,0 +1,279 @@
+@startuml desk-ui-class
+' Solution class diagram — generic metadata-driven Desk UI client for spartan-erp-engine.
+' ADR: docs/adr-desk-ui.md
+'
+' INVARIANT (Frappe "Desk is just a client"): every class below talks to the engine
+' ONLY over HTTP /api. NONE import any engine src/ module. Plain HTML/JS/CSS, no build
+' (ES modules via <script type="module">). Served as STATIC assets from /app on the SAME
+' Vercel project (single origin → no CORS).
+'
+' Keep PlantUML conservative & valid (CLAUDE.md §3) — rendered only in Obsidian.
+
+title Desk UI Client — module breakdown (render from meta, never hard-code a doctype)
+
+' ===========================================================================
+' Layer 1 — App shell + routing
+' ===========================================================================
+package "shell" {
+  class App {
+    -router: Router
+    -session: Session
+    -api: ApiClient
+    -metaCache: MetaCache
+    +start(): void
+    --
+    ' Bootstraps GIS, restores session, calls GET /api/boot once,
+    ' then hands control to Router. Renders the global frame (nav + outlet).
+  }
+
+  class Router {
+    -routes: RouteTable
+    -outlet: HTMLElement
+    +start(): void
+    +navigate(path: string): void
+    -onHashChange(): void
+    -resolve(path): {view, params}
+    --
+    ' HASH routing (decision F1 — recommend hash). Routes:
+    '   #/                      -> Workspace (doctype list from boot.doctypes)
+    '   #/<doctype>             -> ListView
+    '   #/<doctype>/new         -> FormView(create)
+    '   #/<doctype>/<name>      -> FormView(read/edit)
+  }
+
+  class Workspace {
+    +render(boot): HTMLElement
+    ' Renders boot.doctypes[] as nav links. No per-doctype knowledge.
+  }
+}
+
+' ===========================================================================
+' Layer 2 — Auth (Google Sign-In)
+' ===========================================================================
+package "auth" {
+  class Session {
+    -idToken: string|null
+    -profile: {email, name, picture}|null
+    -expiresAt: number
+    +init(): Promise<void>
+    +getToken(): string|null
+    +isSignedIn(): boolean
+    +onSignIn(credential): void
+    +signOut(): void
+    +onAuthChange(cb): void
+    --
+    ' Wraps Google Identity Services. clientId =
+    '   54203725419-2ad869ea9p81lcmf6osm5htos0maoepl.apps.googleusercontent.com
+    ' Holds the GIS `credential` (Google idToken). Storage = in-memory + sessionStorage
+    ' mirror (decision F2). idTokens ~1h: on 401 -> prompt re-auth (silent google.accounts.id
+    ' prompt first, fall back to button). Drives the signed-out gate.
+  }
+
+  class SignInGate {
+    +render(): HTMLElement
+    ' Full-page GIS button when !session.isSignedIn(). Blocks all views.
+  }
+}
+
+' ===========================================================================
+' Layer 3 — API client (the ONLY egress to the engine)
+' ===========================================================================
+package "api" {
+  class ApiClient {
+    -base: string  ' "/api"
+    -session: Session
+    +boot(): Promise<Boot>
+    +meta(dt): Promise<MetaBundle>
+    +list(dt, query): Promise<Doc[]>
+    +get(dt, name): Promise<Doc>
+    +create(dt, fields): Promise<Doc>
+    +update(dt, name, patch): Promise<Doc>
+    +action(dt, name, action): Promise<Doc>
+    -request(method, path, {query, body}): Promise<any>
+    --
+    ' Injects `Authorization: Bearer <session.getToken()>` on EVERY call.
+    ' Sends the EXACT engine envelopes (ADR §Contract):
+    '   create -> POST /api/<dt>            body = {<businessFields>}    (bare record)
+    '   update -> POST /api/<dt>/<name>     body = {<businessFields>}    (bare record)
+    '   action -> POST /api/<dt>/<name>     body = {action:"<name>"}
+    '   list   -> GET  /api/<dt>?limit&offset&order&order_by&f_<field>
+    ' NEVER sends reserved keys (owner/docstatus/name/is_stub) — strips them pre-send.
+    ' Maps response: 401->session.requireReauth, 403->ForbiddenError,
+    '   404->NotFoundError, 400/409->ApiError carrying {error,type} for form/guard UI.
+  }
+
+  class ApiError {
+    +status: number
+    +type: string      ' EngineError name: ValidationError|PermissionError|StateError|...
+    +message: string   ' engine `error` text — surfaced verbatim (e.g. Job 5% gate)
+  }
+  ApiError <|-- ForbiddenError
+  ApiError <|-- NotFoundError
+}
+
+' ===========================================================================
+' Layer 4 — Meta cache
+' ===========================================================================
+package "meta" {
+  class MetaCache {
+    -store: Map<string, MetaBundle>
+    +get(dt): Promise<MetaBundle>
+    +invalidate(dt?): void
+    --
+    ' Memoizes GET /api/meta/<dt> for the session. MetaBundle =
+    '   {doctype, capabilities{read,write,create,delete,submit,cancel},
+    '    meta{fields[<masked>], childTables}, child_metas{<dt>:meta},
+    '    workflow{stateField,states,transitions[]}|null}
+    ' Single source of "what fields exist" — renderers NEVER assume a field.
+  }
+}
+
+' ===========================================================================
+' Layer 5 — Generic renderers (the heart)
+' ===========================================================================
+package "views" {
+  class ListView {
+    -api: ApiClient
+    -metaCache: MetaCache
+    +render(dt): Promise<HTMLElement>
+    -pickColumns(fields): FieldDef[]
+    -onRowClick(name): void
+    --
+    ' meta + GET /api/<dt> -> table. Columns chosen from masked fields
+    ' (in_list_view-like heuristic: first ~5 non-Table fields). Row -> #/<dt>/<name>.
+    ' "New" button visible iff capabilities.create.
+  }
+
+  class FormView {
+    -api: ApiClient
+    -metaCache: MetaCache
+    -registry: WidgetRegistry
+    -workflow: WorkflowBar
+    -mode: "read"|"edit"|"create"
+    +render(dt, name?): Promise<HTMLElement>
+    -buildFields(meta, doc): HTMLElement
+    -collect(): Record   ' gather widget values -> bare business-field record
+    -onSave(): Promise<void>
+    --
+    ' read:  GET /api/<dt>/<name> + meta -> each field via WidgetRegistry (display).
+    ' edit:  same, widgets in input mode; Save -> api.update(dt,name,collect()).
+    ' create: blank meta -> widgets; Save -> api.create(dt,collect()).
+    ' Save errors (400 ValidationError) -> map issue paths to per-field messages.
+    ' Edit/Save buttons gated by capabilities.write/create (cosmetic; engine re-checks).
+  }
+}
+
+' ===========================================================================
+' Layer 6 — Widget registry (fieldtype -> widget)  [heaviest layer]
+' ===========================================================================
+package "widgets" {
+  interface FieldWidget {
+    +mount(field: FieldDef, value, mode): HTMLElement
+    +read(): any   ' current value, for FormView.collect()
+  }
+
+  class WidgetRegistry {
+    -byType: Map<fieldtype, WidgetFactory>
+    +for(field: FieldDef): FieldWidget
+    --
+    ' fieldtype -> widget map (ADR §Widgets):
+    '   Data->text  Text/Code->textarea  Int/Float/Currency->number
+    '   Check->checkbox  Date->date  Datetime->datetime-local
+    '   Select->dropdown(options from field.options, array|\n-string)
+    '   Link->LinkPicker   Table->ChildGrid
+    ' readOnly fields render display-only even in edit mode.
+  }
+
+  class TextWidget
+  class NumberWidget
+  class CheckWidget
+  class DateWidget
+  class SelectWidget
+  class LinkPicker {
+    -api: ApiClient
+    +mount(field, value, mode): HTMLElement
+    +read(): string
+    ' field.options = target doctype. Typeahead -> GET /api/<target>?f_..&limit
+    ' -> pick a name. Stores the linked doc `name` as the value.
+  }
+  class ChildGrid {
+    -api: ApiClient
+    -metaCache: MetaCache
+    -registry: WidgetRegistry
+    +mount(field, rows, mode): HTMLElement
+    +read(): object[]
+    ' field = a childTables entry; columns from child_metas[child.doctype].fields.
+    ' Editable rows (add/remove); each cell reuses WidgetRegistry. Returns row array
+    ' embedded under the parent fieldname in the create/update record.
+  }
+
+  FieldWidget <|.. TextWidget
+  FieldWidget <|.. NumberWidget
+  FieldWidget <|.. CheckWidget
+  FieldWidget <|.. DateWidget
+  FieldWidget <|.. SelectWidget
+  FieldWidget <|.. LinkPicker
+  FieldWidget <|.. ChildGrid
+}
+
+' ===========================================================================
+' Layer 7 — Workflow actions
+' ===========================================================================
+package "workflow" {
+  class WorkflowBar {
+    -api: ApiClient
+    +render(metaBundle, doc): HTMLElement
+    -fireable(workflow, currentState, roles): Transition[]
+    -onAction(action): Promise<void>
+    --
+    ' From metaBundle.workflow + doc[workflow.stateField] + boot.roles:
+    ' show ONLY transitions whose `from` == current state AND (roles undefined OR
+    ' intersect user roles). Click -> api.action(dt,name,action).
+    ' On 409 StateError (e.g. Job 5% gate) -> surface engine `error` text inline.
+    ' submit/cancel buttons gated by capabilities.submit/cancel.
+  }
+}
+
+' ===========================================================================
+' Relationships
+' ===========================================================================
+App *-- Router
+App *-- Session
+App *-- ApiClient
+App *-- MetaCache
+App ..> Workspace
+
+Router ..> ListView
+Router ..> FormView
+Router ..> Workspace
+
+Session <.. SignInGate
+App ..> SignInGate
+
+ApiClient ..> ApiError
+ApiClient --> Session : reads token
+
+MetaCache --> ApiClient
+
+ListView --> ApiClient
+ListView --> MetaCache
+FormView --> ApiClient
+FormView --> MetaCache
+FormView *-- WorkflowBar
+FormView --> WidgetRegistry
+
+WidgetRegistry ..> FieldWidget
+FormView ..> FieldWidget
+LinkPicker --> ApiClient
+ChildGrid --> ApiClient
+ChildGrid --> MetaCache
+ChildGrid --> WidgetRegistry
+WorkflowBar --> ApiClient
+
+note bottom of ApiClient
+  THE single seam to the engine.
+  Every other class reaches /api THROUGH here.
+  No class imports engine src/* (Desk-is-a-client invariant).
+end note
+
+@enduml
