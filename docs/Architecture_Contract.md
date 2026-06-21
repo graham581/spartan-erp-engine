@@ -1,6 +1,6 @@
 # SpartanCRM — Architecture Contract
 
-**Status:** binding on all contributors (Graham, Phoenix, Santosh).
+**Status:** binding on all contributors .
 **Purpose:** keep the DocType architecture intact under pressure. The spaghetti happened because there was no agreed law and no enforcement. This is the law, and every rule below names how it is enforced. A rule without teeth is a suggestion, and suggestions rot — so there are no toothless rules here.
 **How to use it:** Section 9 is the pull-request checklist. Nothing merges that fails it.
 
