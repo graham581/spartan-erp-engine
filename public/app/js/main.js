@@ -36,6 +36,13 @@ export function start() {
   const sidebarEl = document.getElementById('desk-sidebar');
   const viewEl    = document.getElementById('desk-view');
   const gateEl    = document.getElementById('desk-gate');
+  const appEl     = document.getElementById('desk-app');
+
+  // The gate and the app are BOTH full-height (100vh) blocks in normal flow, so exactly
+  // ONE must be shown. (Bug: the gate was only emptied, not hidden, after sign-in — its
+  // empty 100vh white block then covered the viewport while the app sat below the fold.)
+  const _showGate = () => { if (appEl)  appEl.style.display  = 'none'; if (gateEl) gateEl.style.display = ''; };
+  const _showApp  = () => { if (gateEl) gateEl.style.display = 'none'; if (appEl)  appEl.style.display  = ''; };
 
   // ------------------------------------------------------------------
   // 1. Session (U3)
@@ -152,10 +159,8 @@ export function start() {
     signOutBtn.textContent = 'Sign out';
     signOutBtn.addEventListener('click', () => {
       session.signOut();
-      metaCache.clear();
-      sidebarEl.innerHTML = '';
-      viewEl.innerHTML = '';
-      _boot = null;
+      // Hard reset to a clean signed-out state (re-runs start() → gate shows).
+      location.reload();
     });
     sidebarEl.appendChild(signOutBtn);
   }
@@ -178,14 +183,15 @@ export function start() {
 
   // DC3: SignInGate — check token before any view renders
   if (!session.getToken()) {
-    // Render the gate into the dedicated gate element
+    _showGate();
     session.renderGate(gateEl);
-    // Once signed in, hide the gate and proceed
+    // Once signed in, hide the gate and show the app.
     session.onSignedIn(() => {
-      gateEl.innerHTML = '';
+      _showApp();
       _afterSignIn();
     });
   } else {
+    _showApp();
     _afterSignIn();
   }
 }
