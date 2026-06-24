@@ -1,0 +1,165 @@
+@startuml adr-supabase-native-rev2
+title Supabase-native (Rev 2): Identity -> Perm Context -> RLS, and Slice-1 Constraint Emission
+
+' ===========================================================================
+' PART A: identity flow (resolves C1, C2, C3, C4)
+' ===========================================================================
+
+package "Sign-in & Identity (GoTrue)" {
+  class GoogleSignIn {
+    + id_token (engine) / access_token (web CRM)
+  }
+  class GoTrue {
+    + issues session JWT
+    + runs custom_access_token_hook on every mint
+  }
+  class CustomAccessTokenHook {
+    + match lower(email) -> public.users / tabUser
+    + inject claims: app_user_id, branch, role
+  }
+  class tabUser {
+    + name : text (= email, canonical)
+    + email : text
+    + branch : text
+    + enabled : boolean
+    --
+    + auth_user_id : uuid  <<NEW, FK auth.users(id)>>
+  }
+}
+
+GoogleSignIn --> GoTrue : verify (server-mediated:\ncreateUser + generateLink/verifyOtp)
+GoTrue --> CustomAccessTokenHook : on token mint
+CustomAccessTokenHook --> tabUser : lower(email) lookup
+tabUser ..> "auth.users" : auth_user_id (back-filled,\nnullable, additive)
+
+' ---- engine server path (service-role, RLS bypassed) ----
+package "Engine server path (trusted, service_role)" {
+  class ctxFromRequest {
+    + verify bearer
+    + iss==Supabase -> Supabase JWKS (NEW)
+    + else -> Google JWKS (transition)
+  }
+  class identity_resolveUserToCtx {
+    + store.get tabUser + tabHasRole
+    + build Ctx{user, roles, scopes.branch, unrestricted}
+  }
+  class queryConditions {
+    + branch scope + owner filter
+    + unrestricted(admin) -> no filter
+    + PRIMARY enforcer (engine callers)
+  }
+  class SupabaseStore_PgStore {
+    + SERVICE_ROLE / direct-PG
+    + RLS BYPASSED here
+  }
+}
+
+GoTrue --> ctxFromRequest : session JWT (bearer)
+ctxFromRequest --> identity_resolveUserToCtx
+identity_resolveUserToCtx --> queryConditions
+queryConditions --> SupabaseStore_PgStore : scoped reads
+
+' ---- non-engine path (anon/auth key, RLS enforced) ----
+package "Non-engine path (browser / installer / portal)" {
+  class AnonAuthClient {
+    + SUPABASE_ANON_KEY + GoTrue JWT
+    + auth.uid()/auth.jwt() POPULATED
+  }
+  class RLS_Policy_tabCustomer {
+    + service_role: using(true)
+    + authenticated:\n  branch = jwt.branch\n  OR owner = jwt.app_user_id\n  OR jwt.role = admin
+    + REPRODUCES queryConditions
+    + RLS = ONLY enforcer here
+  }
+  class tabDocType {
+    + ... existing meta cols ...
+    --
+    + rls_policy_name : text  <<NEW, C4>>
+    + permission_intent : text  <<NEW, C4>>
+  }
+}
+
+GoTrue --> AnonAuthClient : session JWT
+AnonAuthClient --> RLS_Policy_tabCustomer : carries jwt claims
+RLS_Policy_tabCustomer ..> tabDocType : named by rls_policy_name
+RLS_Policy_tabCustomer ..> CustomAccessTokenHook : reads jwt.branch / jwt.app_user_id
+
+note as DisjointNote
+  C3 - DISJOINT guard sets (not a cross-check):
+  * Engine callers run queryConditions, bypass RLS
+    -> a queryConditions bug has NO DB net.
+  * Non-engine callers never run queryConditions
+    -> RLS is their ONLY protection.
+end note
+queryConditions .. DisjointNote
+RLS_Policy_tabCustomer .. DisjointNote
+
+' ---- test client (C2): sole RLS coverage, OUTSIDE the Store hierarchy ----
+class "scripts/rls-probe.mjs" as RlsProbe {
+  + raw supabase-js, ANON key
+  + signs in test user via GoTrue (real claims)
+  + SOLE RLS coverage; not in Store hierarchy
+  + positive (own branch sees rows) + negative
+}
+RlsProbe --> RLS_Policy_tabCustomer : tests positive + negative
+
+' ===========================================================================
+' PART B: slice-1 constraint emission (resolves C6, C7) - emitted from ONE meta
+' ===========================================================================
+
+package "Meta = single source of truth (adr-meta-as-data)" {
+  class tabDocField {
+    + fieldname, fieldtype
+    + reqd : boolean
+    + unique : boolean
+    + options : text (Link/Table target)
+    + fetch_from : text
+  }
+}
+
+package "Two outputs from the SAME meta (DRY: emitted, not re-authored)" {
+  class "JS validators (friendly message)" as JsValidators {
+    + validateAgainstMeta: reqd/Select/numeric/Check/unique
+    + validateLinks: Link existence
+    + field-level error at engine boundary
+  }
+  class "ddl.js emitter (fail-fast DB net)" as DdlEmitter {
+    + UNIQUE index   <- field.unique        (C6)
+    + FK             <- Link.options target  (C6, closes TOCTOU)
+    + create trigger <- set_doc_stamps()     (C7)
+    + NOT NULL / CHECK : DEFERRED (B.4, with reasons)
+  }
+  class set_doc_stamps {
+    + BEFORE INSERT/UPDATE
+    + modified = now() (AUTHORITATIVE)
+    + creation = coalesce(creation, now())
+  }
+}
+
+tabDocField --> JsValidators : read by
+tabDocField --> DdlEmitter : read by (SAME rows)
+DdlEmitter --> set_doc_stamps : create trigger per table
+DdlEmitter ..> tabUser : (Link FK skipped for stub/unregistered targets)
+
+note as DryNote
+  DRY stance: one rule lives in the META rows.
+  JS gives the friendly field-level message;
+  the DB constraint is the fail-fast / least-privilege net.
+  The constraint is EMITTED from meta, never authored twice.
+end note
+JsValidators .. DryNote
+DdlEmitter .. DryNote
+
+' ===========================================================================
+' O1 / Contract note
+' ===========================================================================
+note as O1Note
+  O1 verdict: Zod is used for DEF structure (def-schema.js)
+  and REQUEST envelopes (request-schemas.js) ONLY.
+  Entity data is validated by hand-rolled meta-driven JS
+  (validateAgainstMeta / validateLinks) - NOT Zod.
+  => Contract section 4.1 "Zod is the only validation" must be amended.
+end note
+JsValidators .. O1Note
+
+@enduml

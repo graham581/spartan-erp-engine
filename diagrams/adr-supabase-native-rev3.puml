@@ -1,0 +1,203 @@
+@startuml adr-supabase-native-rev3
+title Supabase-native (Rev 3): GoTrue -> app_user_id -> app.current_uid() -> app.can_read_doc, and Slice-1 Emission
+
+' ===========================================================================
+' PART A: identity flow grounded on the LIVE shipped platform (resolves C1, C9)
+'   Live objects: 20260623130000_app_schema_and_identity.sql (hook + app.current_uid)
+'                 20260624141500_engine_auth_scope_helpers.sql (can_read_doc, etc.)
+'                 api/_lib/supabase-session.js (provision + mintTokenHash chokepoint)
+' ===========================================================================
+
+package "Sign-in & Identity (GoTrue) -- ALL LIVE ON PROD" {
+  class GoogleSignIn {
+    + email
+  }
+  class "supabase-session.js (shared chokepoint)" as SessionMint {
+    + provisionSupabaseUser(email)  (idempotent)
+    + mintSupabaseTokenHash(email)  -> verifyOtp(token_hash)
+    + NO signInWithIdToken path (Rev-2 was wrong)
+  }
+  class GoTrue {
+    + issues session JWT
+    + runs custom_access_token_hook on every mint
+  }
+  class "custom_access_token_hook (LIVE)" as Hook {
+    + match lower(email) -> public.users
+    + inject claims = { app_user_id = public.users.id (u178), app_role }  FROZEN
+    + NO branch claim (state read live, K7)
+  }
+  class "public.users (canonical actor)" as Users {
+    + id : text (u178)  <-- app_user_id keyspace
+    + email, role, branch
+    + service_states : jsonb  (["VIC","ACT"])
+    + active, auth_user_id
+  }
+}
+
+GoogleSignIn --> SessionMint : verify + provision
+SessionMint --> GoTrue : token_hash -> session
+GoTrue --> Hook : on token mint
+Hook --> Users : lower(email) lookup -> id (u178)
+
+' ---- LIVE shared scope helpers the engine CONSUMES (does not re-author) ----
+package "LIVE shared app.* helpers (20260624141500)" {
+  class "app.current_uid()" as CurUid {
+    + reads request.jwt.claims->>'app_user_id'
+    + works in PostgREST AND Realtime
+  }
+  class "app.is_admin()" as IsAdmin {
+    + role='admin' OR branch='All' (read live)
+  }
+  class "app.state_in_scope(state) / user_state_ceiling()" as StateScope {
+    + service_states ceiling, fail-closed on NULL state
+  }
+  class "app.can_read_doc(owner, state)  *" as CanReadDoc {
+    + identity AND (is_admin OR owner=uid OR state_in_scope)
+    + state NULL -> owner-or-admin (NOT fail-open)
+  }
+  class "app.users_v (security_invoker view)" as UsersV {
+    + id,email,role,branch,service_states,active,auth_user_id
+  }
+  class "app.claims_version() = '2026-06-23.app_user_id+app_role'" as ClaimsVer
+}
+
+CurUid --> Users : id = app_user_id
+IsAdmin --> CurUid
+StateScope --> CurUid
+CanReadDoc --> IsAdmin
+CanReadDoc --> StateScope
+CanReadDoc --> CurUid
+
+' ---- engine server path (service-role, RLS bypassed) ----
+package "Engine server path (trusted, service_role)" {
+  class ctxFromRequest {
+    + verify bearer (Supabase JWKS / Google transition)
+    + read app_user_id (u178) + app_role
+  }
+  class "resolveActorToCtx(app_user_id)" as Resolve {
+    + reads app.users_v BY id (NOT tabUser by email)
+    + Ctx{ user=email, appUserId=u178, roles, unrestricted=is_admin }
+  }
+  class "queryConditions / service.js" as QC {
+    + owner stamped = ctx.appUserId (u178)  <-- C9.3 FIX
+    + owner filter = ctx.appUserId
+    + unrestricted(is_admin) -> no filter
+    + PRIMARY enforcer (engine callers)
+  }
+  class SupabaseStore_PgStore {
+    + SERVICE_ROLE / direct-PG ; RLS BYPASSED
+  }
+}
+
+GoTrue --> ctxFromRequest : session JWT (bearer)
+ctxFromRequest --> Resolve
+Resolve --> UsersV : read actor by id
+Resolve --> QC
+QC --> SupabaseStore_PgStore : scoped reads (owner = u178)
+
+' ---- non-engine path (anon/auth key, RLS enforced via the live helper) ----
+package "Non-engine path (browser / installer / portal)" {
+  class AnonAuthClient {
+    + SUPABASE_ANON_KEY + GoTrue JWT
+    + request.jwt.claims POPULATED ; app.current_uid() = u178
+    + installer/customer carry NO app_user_id -> DENIED (C1 scope)
+  }
+  class "tabCustomer_read policy (generated)" as CustPolicy {
+    + service_role: using(true)
+    + authenticated: USING (true)  <- TEAM-VISIBLE (no state col, plain docperm)
+    + (state-scoped doctype would call app.can_read_doc(owner, <state-col>))
+    + (if_owner doctype -> app.can_read_doc(owner, NULL))
+  }
+  class tabDocType {
+    + ... existing meta cols ...
+    + rls_policy_name : text   <<NEW, C4>>
+    + permission_intent : text <<NEW, C4>>
+  }
+}
+
+GoTrue --> AnonAuthClient : session JWT
+AnonAuthClient --> CustPolicy : carries app_user_id claim
+CustPolicy ..> CanReadDoc : state/if_owner doctypes call the LIVE predicate
+CustPolicy ..> tabDocType : named by rls_policy_name / intent
+QC ..> ClaimsVer : engine asserts claim contract
+
+note as OwnerNote
+  C9 RESOLVED against the SHIPPED hook:
+  * owner keyspace = app_user_id (u178), back-filled from email
+  * NO branch/role claim read in any policy
+  * admin = app.is_admin() ; state read live (K7)
+  * User doctype is READ-ONLY: reads via app.users_v; create/write/delete docperm-denied
+    (assertCan/assertCanMutate 403 before store) -- provisioning via CRM provisionSupabaseUser (Rev-3.1/C13)
+  * Customer = team-visible USING(true) (matches its plain-grant docperm)
+end note
+CustPolicy .. OwnerNote
+QC .. OwnerNote
+
+note as DisjointNote
+  C3 - DISJOINT guard sets (not a cross-check):
+  * Engine callers run queryConditions, bypass RLS -> a queryConditions bug has NO DB net.
+  * Non-engine callers never run queryConditions -> RLS (can_read_doc) is their ONLY protection.
+end note
+QC .. DisjointNote
+CustPolicy .. DisjointNote
+
+' ---- test client (C2): sole RLS coverage, OUTSIDE the Store hierarchy ----
+class "scripts/rls-probe.mjs" as RlsProbe {
+  + raw supabase-js, ANON key
+  + mints real session via supabase-session.js (real app_user_id claim)
+  + SOLE RLS coverage; not in Store hierarchy
+  + positive (actor sees rows) + negative (anon sees zero)
+  + MUST run under anon/auth JWT (service-role would mask a broken policy)
+}
+RlsProbe --> CustPolicy : tests positive + negative
+
+' ===========================================================================
+' PART B: slice-1 constraint emission (C6, C7) + C10/C11 guards - ONE meta source
+' ===========================================================================
+
+package "Meta = single source of truth (adr-meta-as-data)" {
+  class tabDocField {
+    + fieldname, fieldtype
+    + reqd, unique : boolean
+    + options : text (Link/Table target)
+    + fetch_from : text
+  }
+}
+
+package "Two outputs from the SAME meta (DRY: emitted, not re-authored)" {
+  class "JS validators (friendly message)" as JsValidators {
+    + validateAgainstMeta: reqd/Select/numeric/Check/unique
+    + validateLinks: Link existence (TOCTOU read-then-write)
+  }
+  class "ddl.js emitter (fail-fast DB net)" as DdlEmitter {
+    + UNIQUE index  <- field.unique  (C6; C11 dedup precheck on populated)
+    + FK <- Link.options (C6; C10 target-table-exists, LATER alter pass)
+    + create trigger <- set_doc_stamps()  (C7)
+    + NOT NULL / CHECK : DEFERRED (B.4)
+  }
+  class set_doc_stamps {
+    + BEFORE INSERT/UPDATE
+    + creation = coalesce(creation, now())
+    + modified = now()  (AUTHORITATIVE ; C12 benign)
+  }
+}
+
+tabDocField --> JsValidators : read by
+tabDocField --> DdlEmitter : read by (SAME rows)
+DdlEmitter --> set_doc_stamps : create trigger per table
+
+note as DryNote
+  DRY: one rule in META rows. JS gives the friendly field-level message;
+  the DB constraint is the fail-fast / least-privilege net. Emitted from meta, never authored twice.
+end note
+JsValidators .. DryNote
+DdlEmitter .. DryNote
+
+note as O1Note
+  O1: Zod = DEF structure (def-schema.js) + REQUEST envelopes (request-schemas.js) ONLY.
+  Entity data validated by hand-rolled meta-driven JS (validateAgainstMeta / validateLinks) - NOT Zod.
+  => Contract 4.1 "Zod is the only validation" must be amended.
+end note
+JsValidators .. O1Note
+
+@enduml
